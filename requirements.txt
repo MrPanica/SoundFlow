@@ -1,0 +1,9 @@
+PyQt6>=6.6.0
+sounddevice>=0.4.6
+pyaudiowpatch>=0.2.12
+miniaudio>=1.59
+numpy>=1.24.0
+pycaw>=20240210
+edge-tts>=6.1.9
+keyboard>=0.13.5
+psutil>=5.9.0
