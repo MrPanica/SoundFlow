@@ -35,3 +35,6 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
+
+# CodeGraph local index
+.codegraph/
