@@ -66,6 +66,52 @@ def clean_and_normalize_stream_url(raw_url: str) -> str:
     return url
 
 
+def get_best_stream_proxy() -> Optional[str]:
+    """
+    Intelligently detects active proxy to bypass ISP YouTube/stream throttling:
+    1. Environment variables: HTTPS_PROXY, HTTP_PROXY, ALL_PROXY.
+    2. Windows Registry Internet Settings (ProxyServer, e.g. Clash / system proxy).
+    3. Common local DPI-bypass proxy ports: 7897 (Clash Verge/Koala), 7890 (Clash for Windows), 10809/10808 (v2ray/xray), 2080.
+    """
+    import os
+    import socket
+
+    # 1. Common local proxy ports (Clash, V2Ray, Xray, Nekoray, etc.)
+    for port in [7897, 7890, 10809, 10808, 2080, 8080]:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.08)
+                if s.connect_ex(("127.0.0.1", port)) == 0:
+                    return f"http://127.0.0.1:{port}"
+        except Exception:
+            pass
+
+    # 2. Windows Registry Internet Settings
+    if sys.platform == "win32":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings") as key:
+                server, _ = winreg.QueryValueEx(key, "ProxyServer")
+                if server:
+                    if ";" in server:
+                        for part in server.split(";"):
+                            if part.startswith("http=") or part.startswith("https="):
+                                host_port = part.split("=")[1]
+                                return f"http://{host_port}" if not host_port.startswith("http") else host_port
+                    else:
+                        return f"http://{server}" if not server.startswith("http") else server
+        except Exception:
+            pass
+
+    # 3. Environment variables
+    for var in ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"]:
+        val = os.environ.get(var)
+        if val:
+            return val
+
+    return None
+
+
 def resolve_stream_info(raw_url: str) -> Dict[str, Any]:
     """
     Resolves any stream URL (YouTube, YouTube Shorts, YouTube Music, Twitch, radio, or direct audio link)
@@ -74,6 +120,8 @@ def resolve_stream_info(raw_url: str) -> Dict[str, Any]:
     url = clean_and_normalize_stream_url(raw_url)
     if not url:
         return {"url": "", "title": "", "artist": "", "duration": None, "is_live": True, "playlist": []}
+
+    proxy_url = get_best_stream_proxy()
 
     # 1. Russian Radio websites special resolution
     if "rusradio.ru" in url.lower():
@@ -150,6 +198,8 @@ def resolve_stream_info(raw_url: str) -> Dict[str, Any]:
                 'noplaylist': not is_explicit_playlist,
                 'skip_download': True,
             }
+            if proxy_url:
+                ydl_opts['proxy'] = proxy_url
             if FFMPEG_PATH:
                 ydl_opts['ffmpeg_location'] = FFMPEG_PATH
 
@@ -176,6 +226,8 @@ def resolve_stream_info(raw_url: str) -> Dict[str, Any]:
                     first_track = playlist_items[0] if playlist_items else None
                     if first_track:
                         sub_opts = {'quiet': True, 'no_warnings': True, 'format': 'bestaudio/best', 'noplaylist': True, 'skip_download': True}
+                        if proxy_url:
+                            sub_opts['proxy'] = proxy_url
                         if FFMPEG_PATH:
                             sub_opts['ffmpeg_location'] = FFMPEG_PATH
                         with yt_dlp.YoutubeDL(sub_opts) as sub_ydl:
@@ -309,6 +361,66 @@ class RadioStreamer:
         self.on_progress: Optional[Callable[[float, float], None]] = None
         self.on_title_changed: Optional[Callable[[str], None]] = None
 
+    def prepare(self, url: str, name: str = "Online Stream"):
+        """Resolves stream metadata in background and updates UI without starting playback."""
+        if self.is_playing:
+            self.stop()
+
+        self.current_url = url
+        self.current_name = name
+        self.current_pos_sec = 0.0
+        self.is_playing = False
+        self.is_paused = False
+        self.is_buffering = False
+        self._stop_event.set()
+
+        threading.Thread(
+            target=self._prepare_worker,
+            args=(url, name),
+            daemon=True,
+            name="SoundFlow-StreamPrepareWorker"
+        ).start()
+
+    def _prepare_worker(self, raw_url: str, default_name: str):
+        if self.on_status_changed:
+            self.on_status_changed("Загрузка информации...")
+
+        try:
+            info = resolve_stream_info(raw_url)
+            self.current_web_url = info.get("web_url") or raw_url
+            self.current_title = info.get("title") or default_name
+            self.current_artist = info.get("artist") or ""
+            self.duration_sec = info.get("duration")
+            self.is_live = info.get("is_live", True)
+            self.current_pos_sec = 0.0
+
+            if info.get("playlist"):
+                self.playlist_queue = info["playlist"]
+                for idx, item in enumerate(self.playlist_queue):
+                    if item.get("url") == raw_url or item.get("title") == self.current_title:
+                        self.playlist_index = idx
+                        break
+
+            if self.on_metadata_changed:
+                self.on_metadata_changed({
+                    "title": self.current_title,
+                    "artist": self.current_artist,
+                    "duration": self.duration_sec,
+                    "is_live": self.is_live,
+                    "playlist_count": len(self.playlist_queue),
+                    "playlist_index": self.playlist_index
+                })
+
+            if self.on_title_changed:
+                self.on_title_changed(self.current_title)
+
+            if self.on_status_changed:
+                self.on_status_changed("Готов к воспроизведению")
+        except Exception as e:
+            print(f"[RadioStreamer] Prepare worker exception: {e}")
+            if self.on_status_changed:
+                self.on_status_changed(f"Ошибка загрузки: {e}")
+
     def play(self, url: str, name: str = "Online Radio", start_pos: float = 0.0):
         """Starts streaming the given radio station or video URL."""
         if self.is_playing:
@@ -328,8 +440,7 @@ class RadioStreamer:
             args=(url, name, start_pos),
             daemon=True,
             name="SoundFlow-StreamWorker"
-        )
-        self._thread.start()
+        ).start()
 
     def pause(self):
         """Pauses current stream, keeping track and playback position."""
@@ -518,15 +629,21 @@ class RadioStreamer:
 
     def _run_ffmpeg_stream(self, stream_url: str, start_sec: float) -> bool:
         """Pipes float32 stereo PCM audio directly from FFmpeg stdout with producer backpressure."""
+        proxy_url = get_best_stream_proxy()
         cmd = [
             FFMPEG_PATH,
             "-hide_banner",
             "-loglevel", "error",
             "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        ]
+        if proxy_url:
+            cmd.extend(["-http_proxy", proxy_url])
+        cmd.extend([
+            "-rw_timeout", "15000000",
             "-reconnect", "1",
             "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5",
-        ]
+        ])
         if start_sec > 0.0 and not self.is_live:
             cmd.extend(["-ss", f"{start_sec:.2f}"])
 

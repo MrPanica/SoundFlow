@@ -6,12 +6,14 @@ Includes Mica material, NavigationInterface, TitleBar actions, and tray integrat
 
 import sys
 from pathlib import Path
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QRectF
 from PyQt6.QtWidgets import (
     QApplication, QSystemTrayIcon, QMenu, QMessageBox, QWidget,
     QVBoxLayout, QHBoxLayout, QLabel
 )
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import (
+    QIcon, QPixmap, QPainter, QColor, QBrush, QPen, QLinearGradient
+)
 from qfluentwidgets import (
     FluentWindow, FluentIcon, NavigationItemPosition,
     setTheme, Theme, PushButton, PrimaryPushButton,
@@ -161,6 +163,9 @@ class FluentMainWindow(FluentWindow):
 
         # 11. Check driver status & show persistent banner on any tab
         self._check_driver_infobar()
+
+        # 12. Dynamic Taskbar & Tray Audio Activity Animation
+        self._setup_taskbar_icon_animator()
 
     def _init_navigation(self):
         self.addSubInterface(self.soundboard_interface, FluentIcon.MUSIC, "Саундборд")
@@ -400,9 +405,10 @@ class FluentMainWindow(FluentWindow):
         if not icon_path.exists():
             icon_path = Path(sys.executable).parent / "_internal" / "assets" / "app_icon.png"
 
-        icon = QIcon(str(icon_path)) if icon_path.exists() else self.windowIcon()
-        self.setWindowIcon(icon)
-        self.tray.setIcon(icon)
+        self.icon_idle = QIcon(str(icon_path)) if icon_path.exists() else self.windowIcon()
+        self.setWindowIcon(self.icon_idle)
+        QApplication.setWindowIcon(self.icon_idle)
+        self.tray.setIcon(self.icon_idle)
 
         menu = QMenu()
         act_show = menu.addAction("Открыть SoundFlow")
@@ -417,6 +423,88 @@ class FluentMainWindow(FluentWindow):
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
 
+    def _setup_taskbar_icon_animator(self):
+        """Pre-renders animated active equalizer frames for Windows taskbar and tray icon."""
+        icon_path = Path(__file__).resolve().parent.parent / "assets" / "app_icon.png"
+        if not icon_path.exists():
+            icon_path = Path(sys.executable).parent / "_internal" / "assets" / "app_icon.png"
+
+        if icon_path.exists():
+            base_pix = QPixmap(str(icon_path))
+        else:
+            base_pix = self.windowIcon().pixmap(64, 64)
+
+        bar_patterns = [
+            [6, 16, 10],
+            [12, 9, 18],
+            [18, 14, 8],
+            [10, 18, 14],
+            [15, 11, 17],
+            [8, 16, 12]
+        ]
+
+        self.active_icon_frames = []
+        for heights in bar_patterns:
+            pix_64 = base_pix.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            p = QPainter(pix_64)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+            # Dark rounded badge in bottom right
+            p.setBrush(QColor(10, 15, 28, 230))
+            p.setPen(QPen(QColor(0, 230, 118, 220), 1.5))
+            p.drawRoundedRect(QRectF(33, 33, 29, 29), 6, 6)
+
+            # Equalizer bars with neon cyan-to-green gradient
+            grad = QLinearGradient(0, 36, 0, 58)
+            grad.setColorAt(0.0, QColor(0, 229, 255))
+            grad.setColorAt(1.0, QColor(0, 255, 136))
+            p.setBrush(QBrush(grad))
+            p.setPen(Qt.PenStyle.NoPen)
+
+            xs = [37, 45, 53]
+            for x, h in zip(xs, heights):
+                p.drawRoundedRect(QRectF(x, 58 - h, 5, h), 2, 2)
+            p.end()
+
+            pix_32 = pix_64.scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            frame_icon = QIcon()
+            frame_icon.addPixmap(pix_64)
+            frame_icon.addPixmap(pix_32)
+            self.active_icon_frames.append(frame_icon)
+
+        self._taskbar_frame_idx = 0
+        self._is_taskbar_active = False
+
+        self.taskbar_timer = QTimer(self)
+        self.taskbar_timer.setInterval(120)
+        self.taskbar_timer.timeout.connect(self._update_taskbar_icon_state)
+        self.taskbar_timer.start()
+
+    def _update_taskbar_icon_state(self):
+        """Checks audio activity and animates Windows taskbar & tray icon when active."""
+        if self._is_quitting:
+            return
+
+        is_active = self.engine.is_audio_active
+        if is_active:
+            self._is_taskbar_active = True
+            self._taskbar_frame_idx = (self._taskbar_frame_idx + 1) % len(self.active_icon_frames)
+            current_icon = self.active_icon_frames[self._taskbar_frame_idx]
+            self.setWindowIcon(current_icon)
+            QApplication.setWindowIcon(current_icon)
+            if hasattr(self, "tray") and self.tray.isVisible():
+                self.tray.setIcon(current_icon)
+                self.tray.setToolTip("SoundFlow Studio - 🔊 Идет воспроизведение / звук в микрофон")
+        else:
+            if self._is_taskbar_active:
+                # Smooth transition back to idle
+                self._is_taskbar_active = False
+                self.setWindowIcon(self.icon_idle)
+                QApplication.setWindowIcon(self.icon_idle)
+                if hasattr(self, "tray") and self.tray.isVisible():
+                    self.tray.setIcon(self.icon_idle)
+                    self.tray.setToolTip("SoundFlow Studio - Windows 11 Audio Hub")
+
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self._show_window()
@@ -427,6 +515,11 @@ class FluentMainWindow(FluentWindow):
 
     def _quit_app(self):
         self._is_quitting = True
+        try:
+            if hasattr(self, "taskbar_timer"):
+                self.taskbar_timer.stop()
+        except Exception:
+            pass
         try:
             if hasattr(self, "tray"):
                 self.tray.hide()

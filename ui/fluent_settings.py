@@ -258,7 +258,7 @@ class FluentSettingsInterface(QWidget):
 
         self.combo_monitor.clear()
         for d in devices["outputs"]:
-            self.combo_monitor.addItem(f"[{d['hostapi']}] {d['name']}", userData=d["id"])
+            self.combo_monitor.addItem(d["name"], userData=d["id"])
 
         self.combo_target_mic.clear()
         self.combo_target_mic.addItem("-- Не использовать отдельный виртуальный микрофон --", userData=None)
@@ -267,7 +267,7 @@ class FluentSettingsInterface(QWidget):
 
         for d in devices["outputs"]:
             idx = self.combo_target_mic.count()
-            self.combo_target_mic.addItem(f"[{d['hostapi']}] {d['name']}", userData=d["id"])
+            self.combo_target_mic.addItem(d["name"], userData=d["id"])
             name_lower = d["name"].lower()
             api_lower = d.get("hostapi", "").lower()
             if "cable input" in name_lower or "vb-audio" in name_lower or "virtual" in name_lower:
@@ -279,7 +279,7 @@ class FluentSettingsInterface(QWidget):
         self.combo_mic_in.clear()
         self.combo_mic_in.addItem("-- Без физического микрофона --", userData=None)
         for d in devices["inputs"]:
-            self.combo_mic_in.addItem(f"[{d['hostapi']}] {d['name']}", userData=d["id"])
+            self.combo_mic_in.addItem(d["name"], userData=d["id"])
 
         # Select saved
         saved_mon = self.cfg.get("monitor_device_id")

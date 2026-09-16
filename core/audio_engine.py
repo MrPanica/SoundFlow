@@ -184,18 +184,47 @@ class AudioEngine:
         # Callback for sound play state changes: func(sound_id: str, is_playing: bool)
         self.on_sound_state_changed: Optional[Callable[[str, bool], None]] = None
 
+    @property
+    def is_audio_active(self) -> bool:
+        """Returns True if any audio is actively playing, streaming, or passing through."""
+        if bool(self.active_sounds):
+            return True
+        if self.tts_active_sound is not None and not self.tts_active_sound.is_finished():
+            return True
+        if self.radio.is_playing:
+            return True
+        if self.app_stream_enabled:
+            return True
+        if self.mic_passthrough_enabled:
+            return True
+        if self.monitor_peak > 0.02 or self.mic_peak > 0.02:
+            return True
+        return False
+
     # ---------------- Device Querying ----------------
     @staticmethod
     def get_audio_devices() -> Dict[str, List[Dict[str, Any]]]:
-        """Returns structured dictionary of inputs and outputs."""
+        """Returns clean, deduplicated dictionary of inputs and outputs prioritizing WASAPI."""
         inputs = []
         outputs = []
         try:
             devs = sd.query_devices()
             hostapis = sd.query_hostapis()
 
+            has_wasapi = False
+            raw_inputs = []
+            raw_outputs = []
+
             for i, d in enumerate(devs):
                 api_name = hostapis[d["hostapi"]]["name"] if d["hostapi"] < len(hostapis) else "Unknown"
+                api_lower = api_name.lower()
+                # Completely skip low-level WDM-KS devices
+                if "wdm-ks" in api_lower or "wdm" in api_lower:
+                    continue
+
+                if "wasapi" in api_lower:
+                    has_wasapi = True
+
                 info = {
                     "id": i,
                     "name": d["name"],
@@ -205,9 +234,17 @@ class AudioEngine:
                     "default_rate": d["default_samplerate"]
                 }
                 if d["max_input_channels"] > 0:
-                    inputs.append(info)
+                    raw_inputs.append(info)
                 if d["max_output_channels"] > 0:
-                    outputs.append(info)
+                    raw_outputs.append(info)
+
+            # If WASAPI is present on Windows, use WASAPI devices to eliminate all MME/DirectSound duplicates
+            if has_wasapi:
+                inputs = [d for d in raw_inputs if "wasapi" in d["hostapi"].lower()]
+                outputs = [d for d in raw_outputs if "wasapi" in d["hostapi"].lower()]
+            else:
+                inputs = raw_inputs
+                outputs = raw_outputs
         except Exception as e:
             print(f"[AudioEngine] Query devices error: {e}")
 
@@ -544,3 +581,19 @@ class AudioEngine:
         )
         with self._lock:
             self.tts_active_sound = active
+
+    @property
+    def is_audio_active(self) -> bool:
+        """Returns True if any audio is actively playing or sound is passing to mic/monitor."""
+        with self._lock:
+            if len(self.active_sounds) > 0 or self.tts_active_sound is not None:
+                return True
+        if getattr(self.radio, "is_playing", False):
+            return True
+        if getattr(self, "app_stream_enabled", False):
+            return True
+        if getattr(self, "mic_passthrough_enabled", False) and getattr(self, "mic_in_peak", 0.0) > 0.03:
+            return True
+        if getattr(self, "monitor_peak", 0.0) > 0.03 or getattr(self, "mic_peak", 0.0) > 0.03:
+            return True
+        return False

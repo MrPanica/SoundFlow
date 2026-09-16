@@ -216,15 +216,15 @@ class FluentRadioInterface(QWidget):
 
         self.btn_play_custom = PrimaryPushButton(FluentIcon.PLAY, "Запустить", card_custom)
         self.btn_play_custom.setFixedHeight(34)
-        self.btn_play_custom.setToolTip("Начать онлайн-трансляцию потока")
-        self.btn_play_custom.clicked.connect(self._play_custom_url)
+        self.btn_play_custom.setToolTip("Запустить воспроизведение звука прямо сейчас")
+        self.btn_play_custom.clicked.connect(lambda: self._play_custom_url(autoplay=True))
         c_layout.addWidget(self.btn_play_custom)
 
-        self.btn_view = PushButton(FluentIcon.GLOBE, "Посмотреть", card_custom)
-        self.btn_view.setFixedHeight(34)
-        self.btn_view.setToolTip("Открыть ссылку на видео или трансляцию в браузере")
-        self.btn_view.clicked.connect(self._open_url_in_browser)
-        c_layout.addWidget(self.btn_view)
+        self.btn_preview_custom = PushButton(FluentIcon.VIEW, "Посмотреть", card_custom)
+        self.btn_preview_custom.setFixedHeight(34)
+        self.btn_preview_custom.setToolTip("Загрузить информацию о видео в плеер без немедленного включения звука")
+        self.btn_preview_custom.clicked.connect(lambda: self._play_custom_url(autoplay=False))
+        c_layout.addWidget(self.btn_preview_custom)
 
         layout.addWidget(card_custom)
 
@@ -335,6 +335,14 @@ class FluentRadioInterface(QWidget):
         btn_bar.addWidget(self.btn_next)
 
         btn_bar.addStretch()
+
+        # Open in Browser button
+        self.btn_open_browser = PushButton(FluentIcon.GLOBE, "В браузере", self.card_np)
+        self.btn_open_browser.setFixedHeight(32)
+        self.btn_open_browser.setToolTip("Открыть текущее видео или трансляцию в интернет-браузере")
+        self.btn_open_browser.clicked.connect(self._open_url_in_browser)
+        btn_bar.addWidget(self.btn_open_browser)
+
         np_layout.addLayout(btn_bar)
 
         layout.addWidget(self.card_np)
@@ -530,10 +538,16 @@ class FluentRadioInterface(QWidget):
 
         self.engine.radio.play(url, name)
 
-    def _play_custom_url(self):
+    def _play_custom_url(self, autoplay: bool = True):
         raw_url = self.edit_url.text().strip()
         if not raw_url:
-            QMessageBox.warning(self, "Внимание", "Введите корректный URL видео, стрима или радио.")
+            InfoBar.warning(
+                title="Не указана ссылка",
+                content="Введите корректный URL видео, стрима или радио.",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=3500
+            )
             return
 
         url = clean_and_normalize_stream_url(raw_url)
@@ -552,12 +566,21 @@ class FluentRadioInterface(QWidget):
 
         self.lbl_station_name.setText(f"СТРИМ: {name.upper()}")
         self.lbl_artist.setText("")
-        self.lbl_status.setText("Подключение к медиасерверу...")
-        self.lbl_track_title.setText("Анализ и буферизация потока...")
-        self._update_toggle_btn(playing=True)
-        self.btn_play_custom.setEnabled(False)
 
-        self.engine.radio.play(url, name)
+        self.btn_play_custom.setEnabled(False)
+        if hasattr(self, "btn_preview_custom"):
+            self.btn_preview_custom.setEnabled(False)
+
+        if autoplay:
+            self.lbl_status.setText("Подключение к медиасерверу...")
+            self.lbl_track_title.setText("Анализ и буферизация потока...")
+            self._update_toggle_btn(playing=True)
+            self.engine.radio.play(url, name)
+        else:
+            self.lbl_status.setText("Загрузка информации...")
+            self.lbl_track_title.setText("Получение информации о видео...")
+            self._update_toggle_btn(playing=False)
+            self.engine.radio.prepare(url, name)
 
     def _open_url_in_browser(self):
         """Opens the stream or video URL in the user's default web browser."""
@@ -581,7 +604,7 @@ class FluentRadioInterface(QWidget):
         QDesktopServices.openUrl(QUrl(url))
 
     def _toggle_play_pause(self):
-        """Toggles between 'Остановить' and 'Продолжить'."""
+        """Toggles between 'Остановить' and 'Воспроизвести/Продолжить'."""
         if self.engine.radio.is_playing:
             # User wants to STOP / PAUSE
             self._last_played_url = self.engine.radio.current_url or self._last_played_url
@@ -591,10 +614,15 @@ class FluentRadioInterface(QWidget):
             self.lbl_status.setText("Приостановлено")
         else:
             # User wants to RESUME / PLAY
-            if self._last_played_url:
+            target_url = self.engine.radio.current_url or self._last_played_url
+            target_name = self.engine.radio.current_name or self._last_played_name
+            if target_url:
                 self._update_toggle_btn(playing=True)
-                self.lbl_status.setText("Возобновление...")
-                self.engine.radio.resume()
+                self.lbl_status.setText("Подключение...")
+                if getattr(self.engine.radio, "is_paused", False):
+                    self.engine.radio.resume()
+                else:
+                    self.engine.radio.play(target_url, target_name or "Пользовательский поток")
             else:
                 QMessageBox.information(self, "Информация", "Выберите станцию или введите URL для воспроизведения.")
 
@@ -614,7 +642,7 @@ class FluentRadioInterface(QWidget):
             self.btn_stop.setText("Остановить")
             self.btn_stop.setIcon(FluentIcon.PAUSE)
         else:
-            if self._last_played_url:
+            if getattr(self.engine.radio, "is_paused", False):
                 self.btn_stop.setText("Продолжить")
             else:
                 self.btn_stop.setText("Воспроизвести")
@@ -666,17 +694,21 @@ class FluentRadioInterface(QWidget):
         """Executed strictly on the Qt GUI main thread via sig_status_received."""
         self.lbl_status.setText(status)
         self.btn_play_custom.setEnabled(True)
+        if hasattr(self, "btn_preview_custom"):
+            self.btn_preview_custom.setEnabled(True)
 
         if status in ("В эфире", "Воспроизведение"):
             self._update_toggle_btn(playing=True)
         elif status in ("Остановлено", "Приостановлено"):
             self._update_toggle_btn(playing=False)
+        elif status == "Готов к воспроизведению":
+            self._update_toggle_btn(playing=False)
         elif "Ошибка" in status:
             self._update_toggle_btn(playing=False)
-            self.lbl_track_title.setText("Не удалось воспроизвести поток в плеере. Нажмите «Посмотреть», чтобы открыть в браузере.")
+            self.lbl_track_title.setText("Не удалось загрузить поток. Нажмите «В браузере», чтобы открыть в интернете.")
             InfoBar.warning(
                 title="Внимание к потоку",
-                content=f"{status}. Возможно, сервис заблокирован или временно недоступен. Вы можете открыть его в браузере кнопкой «Посмотреть».",
+                content=f"{status}. Возможно, сервис заблокирован или временно недоступен. Вы можете открыть его кнопкой «В браузере».",
                 parent=self,
                 position=InfoBarPosition.TOP,
                 duration=6000
@@ -719,7 +751,7 @@ class FluentRadioInterface(QWidget):
 
         for d in devices["outputs"]:
             idx = self.combo_target_mic.count()
-            self.combo_target_mic.addItem(f"[{d['hostapi']}] {d['name']}", userData=d["id"])
+            self.combo_target_mic.addItem(d["name"], userData=d["id"])
             if saved_target is not None and d["id"] == saved_target:
                 selected_index = idx
 
