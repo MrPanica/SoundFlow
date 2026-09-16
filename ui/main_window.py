@@ -111,7 +111,7 @@ class MainWindow(QMainWindow):
         h_layout.addSpacing(10)
 
         # Master Stereo VU Meters
-        self.vu_monitor = VUMeterWidget(label="НАУШНИКИ (ВЫ)")
+        self.vu_monitor = VUMeterWidget(label="ДЛЯ СЕБЯ (ВЫ)")
         self.vu_monitor.setFixedWidth(140)
         h_layout.addWidget(self.vu_monitor)
 

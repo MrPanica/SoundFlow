@@ -36,8 +36,8 @@ class SettingsDialog(QDialog):
         d_layout = QVBoxLayout(dev_group)
         d_layout.setSpacing(12)
 
-        # Monitor Device (Headphones)
-        d_layout.addWidget(QLabel("🎧 Устройство мониторинга (Твои наушники / колонки):"))
+        # Monitor Device (Speakers / Headphones)
+        d_layout.addWidget(QLabel("🎧 Устройство воспроизведения для себя (Динамики / Наушники):"))
         self.combo_monitor = QComboBox()
         d_layout.addWidget(self.combo_monitor)
 

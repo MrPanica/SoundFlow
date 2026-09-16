@@ -22,12 +22,19 @@ class TTSTab(QWidget):
     """Tab for real-time Text-To-Speech generation directly into microphone."""
 
     sound_saved_to_board = pyqtSignal(str, str)  # filepath, name
+    sig_tts_done = pyqtSignal(object, str)
+    sig_tts_error = pyqtSignal(str)
+    sig_tts_saved = pyqtSignal(str, str)
 
     def __init__(self, audio_engine, config_manager, parent=None):
         super().__init__(parent)
         self.engine = audio_engine
         self.cfg = config_manager
         self.tts = TTSEngine(sample_rate=audio_engine.sample_rate)
+
+        self.sig_tts_done.connect(self._on_tts_done_main_thread)
+        self.sig_tts_error.connect(self._on_tts_error_main_thread)
+        self.sig_tts_saved.connect(self._on_tts_saved_main_thread)
 
         self._build_ui()
 
@@ -162,14 +169,25 @@ class TTSTab(QWidget):
         self.btn_speak.setEnabled(False)
 
         def on_done(samples: np.ndarray):
-            self.btn_speak.setEnabled(True)
             if samples is not None and len(samples) > 0:
-                self.lbl_status.setText("Воспроизводится в микрофон и наушники")
-                self.engine.play_tts_samples(samples)
+                self.sig_tts_done.emit(samples, "Воспроизводится в микрофон и для себя")
             else:
-                self.lbl_status.setText("Ошибка генерации речи (проверьте интернет-соединение)")
+                self.sig_tts_error.emit("Ошибка генерации речи (проверьте интернет-соединение)")
 
         self.tts.synthesize_async(text=text, voice=voice, rate=rate, callback=on_done)
+
+    def _on_tts_done_main_thread(self, samples: np.ndarray, status_msg: str):
+        self.btn_speak.setEnabled(True)
+        self.lbl_status.setText(status_msg)
+        self.engine.play_tts_samples(samples)
+
+    def _on_tts_error_main_thread(self, error_msg: str):
+        self.btn_speak.setEnabled(True)
+        self.lbl_status.setText(error_msg)
+
+    def _on_tts_saved_main_thread(self, filepath: str, title: str):
+        self.lbl_status.setText(f"Сохранено на Саундборд: {title}")
+        self.sound_saved_to_board.emit(filepath, title)
 
     def _save_to_soundboard(self):
         text = self.text_input.toPlainText().strip()
@@ -183,7 +201,7 @@ class TTSTab(QWidget):
 
         def on_done(samples: np.ndarray):
             if samples is None or len(samples) == 0:
-                self.lbl_status.setText("Ошибка создания аудиофайла")
+                self.sig_tts_error.emit("Ошибка создания аудиофайла")
                 return
 
             # Save as WAV in sounds dir
@@ -203,7 +221,6 @@ class TTSTab(QWidget):
                 wf.writeframes(int16_data.tobytes())
 
             short_title = (text[:24] + "...") if len(text) > 24 else text
-            self.lbl_status.setText(f"Сохранено на Саундборд: {short_title}")
-            self.sound_saved_to_board.emit(str(filepath), short_title)
+            self.sig_tts_saved.emit(str(filepath), short_title)
 
         self.tts.synthesize_async(text=text, voice=voice, rate=rate, callback=on_done)

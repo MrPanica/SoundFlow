@@ -108,6 +108,10 @@ class FluentTTSInterface(QWidget):
     """Windows 11 Fluent Design Neural Text-To-Speech Interface."""
 
     sound_saved_to_board = pyqtSignal(str, str)
+    sig_tts_direct_done = pyqtSignal(object, str, bool, bool)
+    sig_tts_synthesis_done = pyqtSignal(object, str, bool, bool)
+    sig_tts_save_done = pyqtSignal(str, str)
+    sig_tts_error = pyqtSignal(str)
 
     def __init__(self, audio_engine, config_manager, parent=None):
         super().__init__(parent)
@@ -119,6 +123,11 @@ class FluentTTSInterface(QWidget):
         self._is_synthesizing = False
         self._active_phrase_menu = None
         self.setObjectName("ttsInterface")
+
+        self.sig_tts_direct_done.connect(self._on_direct_done_main_thread)
+        self.sig_tts_synthesis_done.connect(self._on_synthesis_done_main_thread)
+        self.sig_tts_save_done.connect(self._on_save_done_main_thread)
+        self.sig_tts_error.connect(self._on_error_main_thread)
 
         self._build_ui()
         self._refresh_quick_phrases()
@@ -385,9 +394,8 @@ class FluentTTSInterface(QWidget):
         self.lbl_status.setText(f"Генерация пресета «{text[:18]}...»")
 
         def on_done(samples: Optional[np.ndarray]):
-            self._is_synthesizing = False
             if samples is not None and len(samples) > 0:
-                # Apply Voice Changer FX if configured
+                # Apply Voice Changer FX if configured on worker thread
                 if fx != "normal":
                     try:
                         temp_fx = VoiceFXProcessor(sample_rate=self.engine.sample_rate)
@@ -396,16 +404,9 @@ class FluentTTSInterface(QWidget):
                     except Exception as e:
                         print(f"[TTS] Error applying FX {fx}: {e}")
 
-                if play_mic and play_monitor:
-                    self.lbl_status.setText(f"Транслируется в микрофон и для себя: «{text[:20]}»")
-                elif play_mic:
-                    self.lbl_status.setText(f"Транслируется в микрофон: «{text[:20]}»")
-                else:
-                    self.lbl_status.setText(f"Предпрослушивание: «{text[:20]}»")
-
-                self.engine.play_tts_samples(samples, play_monitor=play_monitor, play_mic=play_mic)
+                self.sig_tts_direct_done.emit(samples, text, play_mic, play_monitor)
             else:
-                self.lbl_status.setText("Ошибка генерации речи")
+                self.sig_tts_error.emit("Ошибка генерации речи")
 
         self.tts.synthesize_async(text=text, voice=voice, rate=rate_str, callback=on_done)
 
@@ -472,11 +473,8 @@ class FluentTTSInterface(QWidget):
         self.btn_preview.setEnabled(False)
 
         def on_done(samples: np.ndarray):
-            self._is_synthesizing = False
-            self.btn_speak.setEnabled(True)
-            self.btn_preview.setEnabled(True)
             if samples is not None and len(samples) > 0:
-                # Apply Voice FX if selected
+                # Apply Voice FX if selected on worker thread
                 if fx != "normal":
                     try:
                         temp_fx = VoiceFXProcessor(sample_rate=self.engine.sample_rate)
@@ -485,17 +483,43 @@ class FluentTTSInterface(QWidget):
                     except Exception as e:
                         print(f"[TTS] FX error: {e}")
 
-                if play_mic and play_monitor:
-                    self.lbl_status.setText("Воспроизводится в микрофон и для себя")
-                elif play_mic:
-                    self.lbl_status.setText("Воспроизводится в микрофон")
-                else:
-                    self.lbl_status.setText("Воспроизводится (предпрослушивание)")
-                self.engine.play_tts_samples(samples, play_monitor=play_monitor, play_mic=play_mic)
+                self.sig_tts_synthesis_done.emit(samples, text, play_mic, play_monitor)
             else:
-                self.lbl_status.setText("Ошибка генерации речи")
+                self.sig_tts_error.emit("Ошибка генерации речи")
 
         self.tts.synthesize_async(text=text, voice=voice, rate=rate_str, callback=on_done)
+
+    def _on_direct_done_main_thread(self, samples: np.ndarray, text: str, play_mic: bool, play_monitor: bool):
+        self._is_synthesizing = False
+        if play_mic and play_monitor:
+            self.lbl_status.setText(f"Транслируется в микрофон и для себя: «{text[:20]}»")
+        elif play_mic:
+            self.lbl_status.setText(f"Транслируется в микрофон: «{text[:20]}»")
+        else:
+            self.lbl_status.setText(f"Предпрослушивание: «{text[:20]}»")
+        self.engine.play_tts_samples(samples, play_monitor=play_monitor, play_mic=play_mic)
+
+    def _on_synthesis_done_main_thread(self, samples: np.ndarray, text: str, play_mic: bool, play_monitor: bool):
+        self._is_synthesizing = False
+        self.btn_speak.setEnabled(True)
+        self.btn_preview.setEnabled(True)
+        if play_mic and play_monitor:
+            self.lbl_status.setText("Воспроизводится в микрофон и для себя")
+        elif play_mic:
+            self.lbl_status.setText("Воспроизводится в микрофон")
+        else:
+            self.lbl_status.setText("Воспроизводится (предпрослушивание)")
+        self.engine.play_tts_samples(samples, play_monitor=play_monitor, play_mic=play_mic)
+
+    def _on_error_main_thread(self, err_msg: str):
+        self._is_synthesizing = False
+        self.btn_speak.setEnabled(True)
+        self.btn_preview.setEnabled(True)
+        self.lbl_status.setText(err_msg)
+
+    def _on_save_done_main_thread(self, filepath: str, short_title: str):
+        self.lbl_status.setText(f"Сохранено на Саундборд: {short_title}")
+        self.sound_saved_to_board.emit(filepath, short_title)
 
     def _save_to_soundboard(self):
         text = self.text_input.toPlainText().strip()
@@ -511,7 +535,7 @@ class FluentTTSInterface(QWidget):
 
         def on_done(samples: np.ndarray):
             if samples is None or len(samples) == 0:
-                self.lbl_status.setText("Ошибка создания аудиофайла")
+                self.sig_tts_error.emit("Ошибка создания аудиофайла")
                 return
 
             if fx != "normal":
@@ -537,7 +561,6 @@ class FluentTTSInterface(QWidget):
                 wf.writeframes(int16_data.tobytes())
 
             short_title = (text[:22] + "...") if len(text) > 22 else text
-            self.lbl_status.setText(f"Сохранено на Саундборд: {short_title}")
-            self.sound_saved_to_board.emit(str(filepath), short_title)
+            self.sig_tts_save_done.emit(str(filepath), short_title)
 
         self.tts.synthesize_async(text=text, voice=voice, rate=rate_str, callback=on_done)

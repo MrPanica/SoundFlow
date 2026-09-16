@@ -127,9 +127,9 @@ class AppStreamTab(QWidget):
         v_layout = QVBoxLayout(vol_group)
         v_layout.setSpacing(12)
 
-        # Monitor Volume (Headphones)
+        # Monitor Volume (For Self / Local)
         mon_row = QHBoxLayout()
-        self.lbl_mon_vol = QLabel("Громкость в твоих наушниках: 80%")
+        self.lbl_mon_vol = QLabel("Громкость для себя: 80%")
         self.lbl_mon_vol.setFixedWidth(240)
         self.slider_mon_vol = QSlider(Qt.Orientation.Horizontal)
         self.slider_mon_vol.setRange(0, 150)
@@ -215,7 +215,7 @@ class AppStreamTab(QWidget):
         self.stream_toggled.emit(False)
 
     def _on_mon_vol_change(self, val: int):
-        self.lbl_mon_vol.setText(f"Громкость в твоих наушниках: {val}%")
+        self.lbl_mon_vol.setText(f"Громкость для себя: {val}%")
         factor = val / 100.0
         self.engine.app_stream_monitor_vol = factor
         self.monitor_volume_changed.emit(factor)

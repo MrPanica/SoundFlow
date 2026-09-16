@@ -108,10 +108,10 @@ class FluentAppStreamInterface(QWidget):
         v_title = SubtitleLabel("Уровни громкости", card_vol)
         v_layout.addWidget(v_title)
 
-        # Monitor Volume (Headphones)
+        # Monitor Volume (Local / For Self)
         mon_row = QHBoxLayout()
-        self.lbl_mon = BodyLabel("В твоих наушниках: 80%", card_vol)
-        self.lbl_mon.setFixedWidth(200)
+        self.lbl_mon = BodyLabel("Слышать самому: 80%", card_vol)
+        self.lbl_mon.setFixedWidth(220)
         self.slider_mon = Slider(Qt.Orientation.Horizontal, card_vol)
         self.slider_mon.setRange(0, 150)
         self.slider_mon.setValue(80)
@@ -272,7 +272,7 @@ class FluentAppStreamInterface(QWidget):
         self.stream_toggled.emit(False)
 
     def _on_mon_vol(self, val: int):
-        self.lbl_mon.setText(f"В твоих наушниках: {val}%")
+        self.lbl_mon.setText(f"Слышать самому: {val}%")
         self.engine.app_stream_monitor_vol = val / 100.0
 
     def _on_mic_vol(self, val: int):
