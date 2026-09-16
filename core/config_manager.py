@@ -58,39 +58,39 @@ DEFAULT_STATIONS: List[Dict[str, Any]] = [
         "description": "Всё будет хорошо! Главные русские хиты"
     },
     {
-        "id": "lofi_beats",
-        "name": "Lofi Chill & Study",
-        "genre": "Lofi / Hip-Hop",
-        "url": "https://stream.zeno.fm/f3wvbbqmdg8uv",
-        "description": "Расслабляющий чилловый хип-хоп для фона и каток"
-    },
-    {
-        "id": "nightride_synth",
-        "name": "Nightride Synthwave",
-        "genre": "Synthwave / Cyberpunk",
-        "url": "https://stream.nightride.fm/nightride.m4a",
-        "description": "Ретровейв, синтвейв и неоновый вайб 80-х"
-    },
-    {
         "id": "record_edm",
         "name": "Radio Record Club Dance",
         "genre": "EDM / Electronic",
-        "url": "https://radiorecord.hostingradio.ru/rr_96.aacp",
+        "url": "https://hls-01-radiorecord.hostingradio.ru/record/playlist.m3u8",
         "description": "Энергичная электронная клубная музыка"
     },
     {
         "id": "rock_fm",
         "name": "Rock Classic Hits",
         "genre": "Classic Rock",
-        "url": "https://icecast-vgtrk.cdnvideo.ru/rockfm_mp3_128kbps",
+        "url": "https://nashe1.hostingradio.ru/rock-128.mp3",
         "description": "Легендарные рок-хиты всех времен"
     },
     {
         "id": "dfm_club",
         "name": "DFM Club",
         "genre": "Dance / Pop",
-        "url": "https://dfm.hostingradio.ru/dfm96.aacp",
+        "url": "https://dfm.hostingradio.ru/dfm128.mp3",
         "description": "Зажигательные хиты и клубные ремиксы"
+    },
+    {
+        "id": "lofi_beats",
+        "name": "Lofi Chill & Study",
+        "genre": "Lofi / Hip-Hop",
+        "url": "http://stream.laut.fm/lofi",
+        "description": "Расслабляющий чилловый хип-хоп для фона и каток"
+    },
+    {
+        "id": "nightride_synth",
+        "name": "Nightride Synthwave",
+        "genre": "Synthwave / Cyberpunk",
+        "url": "https://stream.nightride.fm/nightride.mp3",
+        "description": "Ретровейв, синтвейв и неоновый вайб 80-х"
     }
 ]
 
@@ -135,11 +135,29 @@ class ConfigManager:
                 self.categories.append(def_cat)
 
     def _ensure_default_stations(self):
+        broken_url_map = {
+            "https://radiorecord.hostingradio.ru/rr_96.aacp": "https://hls-01-radiorecord.hostingradio.ru/record/playlist.m3u8",
+            "http://radiorecord.hostingradio.ru/rr_96.aacp": "https://hls-01-radiorecord.hostingradio.ru/record/playlist.m3u8",
+            "https://icecast-vgtrk.cdnvideo.ru/rockfm_mp3_128kbps": "https://nashe1.hostingradio.ru/rock-128.mp3",
+            "http://icecast-vgtrk.cdnvideo.ru/rockfm_mp3_128kbps": "https://nashe1.hostingradio.ru/rock-128.mp3",
+            "https://dfm.hostingradio.ru/dfm96.aacp": "https://dfm.hostingradio.ru/dfm128.mp3",
+            "https://stream.nightride.fm/nightride.m4a": "https://stream.nightride.fm/nightride.mp3",
+            "https://stream.zeno.fm/f3wvbbqmdg8uv": "http://stream.laut.fm/lofi",
+        }
+        modified = False
         existing_ids = {s.get("id") for s in self.stations}
+        for s in self.stations:
+            curr_url = s.get("url", "")
+            if curr_url in broken_url_map:
+                s["url"] = broken_url_map[curr_url]
+                modified = True
+
         for def_st in DEFAULT_STATIONS:
             if def_st["id"] not in existing_ids:
                 self.stations.append(def_st)
-        self.save_stations()
+                modified = True
+        if modified:
+            self.save_stations()
 
     def _load_json(self, path: Path, default: Any) -> Any:
         try:

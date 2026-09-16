@@ -349,6 +349,9 @@ class RadioStreamer:
         # Seeking state
         self._seek_requested_pos: Optional[float] = None
 
+        # Error tracking & diagnostics
+        self.last_error_details: str = ""
+
         # Threading
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -360,6 +363,10 @@ class RadioStreamer:
         self.on_status_changed: Optional[Callable[[str], None]] = None
         self.on_progress: Optional[Callable[[float, float], None]] = None
         self.on_title_changed: Optional[Callable[[str], None]] = None
+
+    def get_last_error_details(self) -> str:
+        """Returns the last captured technical stream error diagnostics."""
+        return self.last_error_details or "Подробности ошибки отсутствуют."
 
     def prepare(self, url: str, name: str = "Online Stream"):
         """Resolves stream metadata in background and updates UI without starting playback."""
@@ -417,6 +424,9 @@ class RadioStreamer:
             if self.on_status_changed:
                 self.on_status_changed("Готов к воспроизведению")
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            self.last_error_details = f"Ошибка подготовки/загрузки информации:\nURL: {raw_url}\nИсключение: {e}\n\n{tb}"
             print(f"[RadioStreamer] Prepare worker exception: {e}")
             if self.on_status_changed:
                 self.on_status_changed(f"Ошибка загрузки: {e}")
@@ -585,15 +595,33 @@ class RadioStreamer:
                     self._clear_queues()
 
                 # Choose streaming pipeline
-                use_ffmpeg = bool(FFMPEG_PATH and (not self.is_live or "googlevideo.com" in direct_url or "twitch.tv" in direct_url or ".m3u8" in direct_url))
+                direct_lower = direct_url.lower()
+                use_ffmpeg = bool(FFMPEG_PATH and (
+                    not self.is_live
+                    or "googlevideo.com" in direct_lower
+                    or "twitch.tv" in direct_lower
+                    or ".m3u8" in direct_lower
+                    or ".aac" in direct_lower
+                    or ".m4a" in direct_lower
+                    or "hls" in direct_lower
+                ))
 
+                success = False
                 if use_ffmpeg:
                     success = self._run_ffmpeg_stream(direct_url, self.current_pos_sec)
                 else:
                     success = self._run_miniaudio_stream(direct_url)
+                    # Automatic fallback to FFmpeg if miniaudio fails on this stream
+                    if not success and FFMPEG_PATH and not self._stop_event.is_set() and self._seek_requested_pos is None:
+                        print(f"[RadioStreamer] Miniaudio stream failed for {direct_url}. Falling back to FFmpeg...")
+                        if self.on_status_changed:
+                            self.on_status_changed("Резервный декодер (FFmpeg)...")
+                        success = self._run_ffmpeg_stream(direct_url, self.current_pos_sec)
 
                 if not success:
                     had_error = True
+                    if self.on_status_changed and not self._stop_event.is_set():
+                        self.on_status_changed("Ошибка радиопотока")
                     break
 
                 # If EOF reached naturally and seek wasn't requested
@@ -620,6 +648,9 @@ class RadioStreamer:
                         break
         except Exception as e:
             had_error = True
+            import traceback
+            tb = traceback.format_exc()
+            self.last_error_details = f"Ошибка в рабочем потоке стримера:\nURL: {raw_url}\nИсключение: {e}\n\n{tb}"
             print(f"[RadioStreamer] Stream worker exception: {e}")
             if self.on_status_changed:
                 self.on_status_changed(f"Ошибка потока: {e}")
@@ -667,15 +698,30 @@ class RadioStreamer:
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = 0  # SW_HIDE
 
+        stderr_lines: List[str] = []
+
+        def _drain_stderr(proc):
+            try:
+                for line in iter(proc.stderr.readline, b''):
+                    if line:
+                        text = line.decode('utf-8', errors='replace').strip()
+                        if text:
+                            stderr_lines.append(text)
+                            if len(stderr_lines) > 50:
+                                stderr_lines.pop(0)
+            except Exception:
+                pass
+
         try:
             self._ffmpeg_proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 bufsize=self.buffer_size * 2 * 4 * 16,
                 startupinfo=startupinfo,
                 creationflags=creationflags
             )
+            threading.Thread(target=_drain_stderr, args=(self._ffmpeg_proc,), daemon=True).start()
             bytes_per_chunk = self.buffer_size * 2 * 4  # 1024 frames * 2 channels * float32 (4 bytes) = 8192 bytes
 
             if self.on_status_changed:
@@ -717,12 +763,18 @@ class RadioStreamer:
                         self.on_status_changed("В эфире" if self.is_live else "Воспроизведение")
 
             if total_chunks == 0 and not self._stop_event.is_set() and self._seek_requested_pos is None:
+                err_text = "\n".join(stderr_lines) if stderr_lines else "FFmpeg не вернул аудиоданных (таймаут соединения или сетевая блокировка)."
+                self.last_error_details = f"URL: {stream_url}\nПрокси: {proxy_url or 'Нет (прямое соединение)'}\nFFmpeg лог:\n{err_text}"
                 if self.on_status_changed:
                     self.on_status_changed("Ошибка: поток недоступен или заблокирован")
                 return False
 
             return True
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            err_text = "\n".join(stderr_lines) if stderr_lines else ""
+            self.last_error_details = f"Ошибка запуска FFmpeg: {e}\nURL: {stream_url}\nПрокси: {proxy_url or 'Нет'}\n{tb}\n\nFFmpeg лог:\n{err_text}"
             print(f"[RadioStreamer] FFmpeg stream exception: {e}")
             if self.on_status_changed:
                 self.on_status_changed(f"Ошибка видеопотока: {e}")
@@ -750,6 +802,7 @@ class RadioStreamer:
             if self.on_status_changed:
                 self.on_status_changed("В эфире")
 
+            total_chunks = 0
             for samples in generator:
                 if self._stop_event.is_set() or self._seek_requested_pos is not None:
                     break
@@ -762,6 +815,7 @@ class RadioStreamer:
                     break
 
                 data = np.frombuffer(samples, dtype=np.float32).reshape(-1, 2)
+                total_chunks += 1
                 try:
                     self.queue_monitor.put(data, block=False)
                 except queue.Full:
@@ -778,11 +832,16 @@ class RadioStreamer:
                     if self.on_status_changed:
                         self.on_status_changed("В эфире")
 
+            if total_chunks == 0 and not self._stop_event.is_set() and self._seek_requested_pos is None:
+                self.last_error_details = f"Miniaudio не получил аудиопакетов от сервера.\nURL: {stream_url}"
+                return False
+
             return True
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            self.last_error_details = f"Ошибка подключения к радиопотоку через miniaudio:\nURL: {stream_url}\nИсключение: {e}\n\n{tb}"
             print(f"[RadioStreamer] Miniaudio stream error: {e}")
-            if self.on_status_changed:
-                self.on_status_changed("Ошибка радиопотока")
             return False
         finally:
             if self.client:

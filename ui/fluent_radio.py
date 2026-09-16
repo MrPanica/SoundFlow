@@ -5,18 +5,23 @@ Play/Pause toggle ('Остановить' <-> 'Продолжить'), [-10s] / 
 thread-safe Qt signals, track time display, and playlist auto-advance.
 """
 
-from typing import Dict, Any, Optional
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QUrl
+import json
+import urllib.parse
+import urllib.request
+from typing import Dict, Any, Optional, List
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QUrl, QThread
 from PyQt6.QtGui import QDesktopServices, QMouseEvent
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
-    QMessageBox, QDialog
+    QMessageBox, QDialog, QStackedWidget, QTableWidgetItem,
+    QHeaderView, QAbstractItemView, QApplication
 )
 from qfluentwidgets import (
     CardWidget, PrimaryPushButton, PushButton, TransparentToolButton,
     LineEdit, Slider, TitleLabel, SubtitleLabel, BodyLabel,
     CaptionLabel, FluentIcon, RoundMenu, Action, SwitchButton, ComboBox,
-    InfoBar, InfoBarPosition, IconWidget
+    InfoBar, InfoBarPosition, IconWidget, SegmentedWidget, TableWidget,
+    SearchLineEdit, IndeterminateProgressBar, TextEdit
 )
 
 from core.radio_streamer import clean_and_normalize_stream_url
@@ -53,69 +58,402 @@ class TimelineSlider(Slider):
         super().mouseReleaseEvent(e)
 
 
-class AddStationDialog(QDialog):
-    """Dialog to add a custom online radio station or stream preset."""
+class StreamDebugDialog(QDialog):
+    """Dialog showing technical diagnostics of the audio stream with one-click copy."""
 
-    def __init__(self, parent=None):
+    def __init__(self, radio_streamer, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Новая станция или стрим")
-        self.setFixedSize(480, 360)
+        self.radio = radio_streamer
+        self.setWindowTitle("Диагностика медиапотока")
+        self.setFixedSize(620, 460)
         self.setStyleSheet("background-color: #202020; color: #ffffff;")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(12)
 
-        layout.addWidget(SubtitleLabel("Добавить станцию или стрим", self))
+        layout.addWidget(SubtitleLabel("Техническая информация об ошибке потока", self))
 
-        layout.addWidget(BodyLabel("Название:", self))
-        self.edit_name = LineEdit(self)
-        self.edit_name.setPlaceholderText("Например: Моё любимое радио или Стрим")
-        self.edit_name.setFixedHeight(32)
-        layout.addWidget(self.edit_name)
+        info_text = f"Станция/Стрим: {self.radio.current_name or 'Не указано'}\nURL: {self.radio.current_url or 'Нет'}"
+        lbl_info = CaptionLabel(info_text, self)
+        lbl_info.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 12px;")
+        layout.addWidget(lbl_info)
 
-        layout.addWidget(BodyLabel("URL аудиопотока или ссылки:", self))
-        self.edit_url = LineEdit(self)
-        self.edit_url.setPlaceholderText("YouTube, YouTube Shorts, YouTube Music, Twitch, MP3, AAC, Icecast...")
-        self.edit_url.setFixedHeight(32)
-        layout.addWidget(self.edit_url)
-
-        layout.addWidget(BodyLabel("Жанр / Категория (необязательно):", self))
-        self.edit_genre = LineEdit(self)
-        self.edit_genre.setPlaceholderText("Например: Rock, Lofi, EDM, YouTube, Подкаст")
-        self.edit_genre.setFixedHeight(32)
-        layout.addWidget(self.edit_genre)
-
-        hint = CaptionLabel("Поддерживаются радиостанции (Icecast, MP3, AAC), ссылки YouTube, YouTube Shorts и Twitch.", self)
-        hint.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 11px;")
-        layout.addWidget(hint)
+        self.edit_details = TextEdit(self)
+        self.edit_details.setReadOnly(True)
+        self.edit_details.setStyleSheet("font-family: Consolas, 'Courier New', monospace; font-size: 11px; background-color: #181818; color: #e0e0e0; border: 1px solid #333333; border-radius: 6px;")
+        raw_error = self.radio.get_last_error_details()
+        self.edit_details.setPlainText(raw_error)
+        layout.addWidget(self.edit_details, stretch=1)
 
         btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        btn_cancel = PushButton("Отмена", self)
-        btn_cancel.clicked.connect(self.reject)
-        btn_row.addWidget(btn_cancel)
+        btn_row.setSpacing(10)
 
-        btn_add = PrimaryPushButton(FluentIcon.ADD, "Добавить", self)
-        btn_add.clicked.connect(self._validate)
-        btn_row.addWidget(btn_add)
+        self.btn_copy = PrimaryPushButton(FluentIcon.COPY, "Копировать в буфер", self)
+        self.btn_copy.setFixedHeight(32)
+        self.btn_copy.clicked.connect(self._copy_to_clipboard)
+        btn_row.addWidget(self.btn_copy)
+
+        btn_row.addStretch()
+
+        btn_close = PushButton("Закрыть", self)
+        btn_close.setFixedHeight(32)
+        btn_close.clicked.connect(self.accept)
+        btn_row.addWidget(btn_close)
+
         layout.addLayout(btn_row)
 
-    def _validate(self):
+    def _copy_to_clipboard(self):
+        curr_url = self.radio.current_url or "Unknown URL"
+        full_text = f"SoundFlow Studio Stream Diagnostic:\nСтанция: {self.radio.current_name}\nURL: {curr_url}\n\n{self.edit_details.toPlainText()}"
+        QApplication.clipboard().setText(full_text)
+        InfoBar.success(
+            title="Скопировано",
+            content="Детали ошибки скопированы в буфер обмена.",
+            parent=self,
+            position=InfoBarPosition.TOP,
+            duration=2500
+        )
+
+
+class RadioCatalogSearchThread(QThread):
+    sig_results_ready = pyqtSignal(list)
+    sig_search_error = pyqtSignal(str)
+
+    def __init__(self, countrycode: str = "RU", tag: str = "", query: str = "", parent=None):
+        super().__init__(parent)
+        self.countrycode = countrycode
+        self.tag = tag
+        self.query = query
+
+    def run(self):
+        params = {
+            "limit": 60,
+            "hidebroken": "true",
+            "order": "votes",
+            "reverse": "true"
+        }
+        if self.countrycode:
+            params["countrycode"] = self.countrycode
+        if self.tag:
+            params["tag"] = self.tag
+        if self.query:
+            params["name"] = self.query
+
+        query_string = urllib.parse.urlencode(params)
+        servers = [
+            "https://de1.api.radio-browser.info",
+            "https://all.api.radio-browser.info",
+            "https://nl1.api.radio-browser.info",
+            "https://at1.api.radio-browser.info"
+        ]
+
+        last_err = ""
+        for srv in servers:
+            api_url = f"{srv}/json/stations/search?{query_string}"
+            try:
+                req = urllib.request.Request(
+                    api_url,
+                    headers={"User-Agent": "SoundFlowStudio/1.0"}
+                )
+                with urllib.request.urlopen(req, timeout=6) as resp:
+                    if resp.status == 200:
+                        raw_data = resp.read().decode("utf-8")
+                        stations = json.loads(raw_data)
+                        self.sig_results_ready.emit(stations)
+                        return
+            except Exception as e:
+                last_err = str(e)
+                continue
+
+        self.sig_search_error.emit(last_err or "Не удалось подключиться к серверу каталога радиостанций.")
+
+
+class AddStationDialog(QDialog):
+    """Dialog to search and add radio stations from Radio Browser API or manual URL input."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Добавить радиостанцию или стрим")
+        self.setMinimumSize(750, 540)
+        self.setStyleSheet("background-color: #202020; color: #ffffff;")
+
+        self._selected_data: Optional[Dict[str, str]] = None
+        self._search_thread: Optional[RadioCatalogSearchThread] = None
+        self._current_results: List[Dict[str, Any]] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+
+        # Header Title
+        layout.addWidget(SubtitleLabel("Добавить радиостанцию или медиапоток", self))
+
+        # Segmented Navigation
+        self.seg_nav = SegmentedWidget(self)
+        self.seg_nav.addItem(routeKey="catalog", text="Каталог радиостанций (Radio-Browser)", onClick=lambda: self.stack.setCurrentIndex(0), icon=FluentIcon.GLOBE)
+        self.seg_nav.addItem(routeKey="manual", text="Ввести вручную (URL / YouTube)", onClick=lambda: self.stack.setCurrentIndex(1), icon=FluentIcon.EDIT)
+        layout.addWidget(self.seg_nav)
+
+        # Stacked Widget
+        self.stack = QStackedWidget(self)
+
+        # PAGE 0: Catalog
+        page_cat = QWidget(self)
+        cat_layout = QVBoxLayout(page_cat)
+        cat_layout.setContentsMargins(0, 8, 0, 0)
+        cat_layout.setSpacing(10)
+
+        # Filter row
+        filter_layout = QHBoxLayout()
+        filter_layout.setSpacing(8)
+
+        # Country combo
+        self.combo_country = ComboBox(page_cat)
+        self.combo_country.setFixedWidth(145)
+        countries = [
+            ("Россия (RU)", "RU"),
+            ("Все страны", ""),
+            ("Беларусь (BY)", "BY"),
+            ("Казахстан (KZ)", "KZ"),
+            ("США (US)", "US"),
+            ("Германия (DE)", "DE"),
+            ("Великобритания (GB)", "GB"),
+            ("Франция (FR)", "FR"),
+            ("Украина (UA)", "UA"),
+            ("Польша (PL)", "PL")
+        ]
+        for name, code in countries:
+            self.combo_country.addItem(name, userData=code)
+        filter_layout.addWidget(self.combo_country)
+
+        # Genre combo
+        self.combo_genre = ComboBox(page_cat)
+        self.combo_genre.setFixedWidth(155)
+        genres = [
+            ("Все жанры", ""),
+            ("Поп / Топ-хиты", "pop"),
+            ("Рок / Rock", "rock"),
+            ("Клубная / Dance", "dance"),
+            ("Электроника / EDM", "electronic"),
+            ("Lofi / Chillout", "lofi"),
+            ("Ретровейв / Synth", "synthwave"),
+            ("Ретро / 80-е", "retro"),
+            ("Джаз / Блюз", "jazz"),
+            ("Классика", "classical"),
+            ("Хип-хоп / Рэп", "hiphop"),
+            ("Новости / Разговорное", "news"),
+            ("Метал", "metal"),
+            ("Релакс / Ambient", "ambient")
+        ]
+        for name, code in genres:
+            self.combo_genre.addItem(name, userData=code)
+        filter_layout.addWidget(self.combo_genre)
+
+        # Search line edit
+        self.edit_catalog_query = SearchLineEdit(page_cat)
+        self.edit_catalog_query.setPlaceholderText("Поиск по названию станции...")
+        self.edit_catalog_query.returnPressed.connect(self._do_catalog_search)
+        filter_layout.addWidget(self.edit_catalog_query, stretch=1)
+
+        # Search button
+        self.btn_search = PrimaryPushButton(FluentIcon.SEARCH, "Найти", page_cat)
+        self.btn_search.setFixedHeight(32)
+        self.btn_search.clicked.connect(self._do_catalog_search)
+        filter_layout.addWidget(self.btn_search)
+
+        cat_layout.addLayout(filter_layout)
+
+        # Progress bar
+        self.progress_bar = IndeterminateProgressBar(page_cat)
+        self.progress_bar.setVisible(False)
+        cat_layout.addWidget(self.progress_bar)
+
+        # Results table
+        self.table = TableWidget(page_cat)
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Станция", "Жанры / Теги", "Страна", "Битрейт"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setColumnWidth(0, 220)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.itemDoubleClicked.connect(self._on_table_double_clicked)
+        cat_layout.addWidget(self.table, stretch=1)
+
+        # Bottom catalog action bar
+        cat_bottom = QHBoxLayout()
+        self.lbl_found_info = CaptionLabel("Нажмите «Найти» для загрузки станций", page_cat)
+        self.lbl_found_info.setStyleSheet("color: rgba(255, 255, 255, 0.6);")
+        cat_bottom.addWidget(self.lbl_found_info)
+        cat_bottom.addStretch()
+
+        self.btn_add_from_catalog = PrimaryPushButton(FluentIcon.ADD, "Добавить в мои станции", page_cat)
+        self.btn_add_from_catalog.setFixedHeight(32)
+        self.btn_add_from_catalog.clicked.connect(self._add_selected_catalog_station)
+        cat_bottom.addWidget(self.btn_add_from_catalog)
+
+        btn_close_cat = PushButton("Закрыть", page_cat)
+        btn_close_cat.setFixedHeight(32)
+        btn_close_cat.clicked.connect(self.reject)
+        cat_bottom.addWidget(btn_close_cat)
+
+        cat_layout.addLayout(cat_bottom)
+        self.stack.addWidget(page_cat)
+
+        # PAGE 1: Manual entry
+        page_man = QWidget(self)
+        man_layout = QVBoxLayout(page_man)
+        man_layout.setContentsMargins(0, 12, 0, 0)
+        man_layout.setSpacing(12)
+
+        man_layout.addWidget(BodyLabel("Название станции или стрима:", page_man))
+        self.edit_name = LineEdit(page_man)
+        self.edit_name.setPlaceholderText("Например: Моё любимое радио или YouTube стрим")
+        self.edit_name.setFixedHeight(32)
+        man_layout.addWidget(self.edit_name)
+
+        man_layout.addWidget(BodyLabel("URL аудиопотока или ссылки:", page_man))
+        self.edit_url = LineEdit(page_man)
+        self.edit_url.setPlaceholderText("YouTube, YouTube Shorts, Twitch, MP3, AAC, Icecast, m3u8...")
+        self.edit_url.setFixedHeight(32)
+        man_layout.addWidget(self.edit_url)
+
+        man_layout.addWidget(BodyLabel("Жанр / Категория (необязательно):", page_man))
+        self.edit_genre = LineEdit(page_man)
+        self.edit_genre.setPlaceholderText("Например: Rock, Lofi, EDM, Подкаст")
+        self.edit_genre.setFixedHeight(32)
+        man_layout.addWidget(self.edit_genre)
+
+        hint = CaptionLabel("Поддерживаются онлайн-радиостанции (Icecast, MP3, AAC, HLS), ссылки YouTube, YouTube Shorts и Twitch.", page_man)
+        hint.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 11px;")
+        man_layout.addWidget(hint)
+
+        man_layout.addStretch()
+
+        btn_row_man = QHBoxLayout()
+        btn_row_man.addStretch()
+        btn_cancel_man = PushButton("Отмена", page_man)
+        btn_cancel_man.setFixedHeight(32)
+        btn_cancel_man.clicked.connect(self.reject)
+        btn_row_man.addWidget(btn_cancel_man)
+
+        btn_add_man = PrimaryPushButton(FluentIcon.ADD, "Добавить", page_man)
+        btn_add_man.setFixedHeight(32)
+        btn_add_man.clicked.connect(self._validate_manual)
+        btn_row_man.addWidget(btn_add_man)
+
+        man_layout.addLayout(btn_row_man)
+        self.stack.addWidget(page_man)
+
+        layout.addWidget(self.stack, stretch=1)
+
+        # Filters changed trigger auto-search
+        self.combo_country.currentIndexChanged.connect(self._do_catalog_search)
+        self.combo_genre.currentIndexChanged.connect(self._do_catalog_search)
+
+        # Initial search on show
+        QTimer.singleShot(100, self._do_catalog_search)
+
+    def _do_catalog_search(self):
+        code = self.combo_country.currentData() or ""
+        tag = self.combo_genre.currentData() or ""
+        query = self.edit_catalog_query.text().strip()
+
+        self.btn_search.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.lbl_found_info.setText("Поиск станций в каталоге...")
+
+        if self._search_thread and self._search_thread.isRunning():
+            self._search_thread.terminate()
+
+        self._search_thread = RadioCatalogSearchThread(countrycode=code, tag=tag, query=query, parent=self)
+        self._search_thread.sig_results_ready.connect(self._on_catalog_results)
+        self._search_thread.sig_search_error.connect(self._on_catalog_error)
+        self._search_thread.start()
+
+    def _on_catalog_results(self, stations: List[Dict[str, Any]]):
+        self.progress_bar.setVisible(False)
+        self.btn_search.setEnabled(True)
+        self._current_results = stations
+        self.table.setRowCount(0)
+
+        if not stations:
+            self.lbl_found_info.setText("Станций не найдено. Попробуйте изменить параметры поиска.")
+            return
+
+        self.lbl_found_info.setText(f"Найдено станций: {len(stations)} (двойной клик для добавления)")
+        self.table.setRowCount(len(stations))
+
+        for row, st in enumerate(stations):
+            name_item = QTableWidgetItem(st.get("name", "Unknown"))
+            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+            tags_item = QTableWidgetItem(st.get("tags", ""))
+            tags_item.setFlags(tags_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+            country_item = QTableWidgetItem(st.get("country", ""))
+            country_item.setFlags(country_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+            bitrate = st.get("bitrate", 0)
+            bitrate_str = f"{bitrate} kbps" if bitrate > 0 else "Auto"
+            bitrate_item = QTableWidgetItem(bitrate_str)
+            bitrate_item.setFlags(bitrate_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+            self.table.setItem(row, 0, name_item)
+            self.table.setItem(row, 1, tags_item)
+            self.table.setItem(row, 2, country_item)
+            self.table.setItem(row, 3, bitrate_item)
+
+        if len(stations) > 0:
+            self.table.selectRow(0)
+
+    def _on_catalog_error(self, err: str):
+        self.progress_bar.setVisible(False)
+        self.btn_search.setEnabled(True)
+        self.lbl_found_info.setText(f"Ошибка каталога: {err}")
+
+    def _on_table_double_clicked(self, item):
+        self._add_selected_catalog_station()
+
+    def _add_selected_catalog_station(self):
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self._current_results):
+            QMessageBox.warning(self, "Внимание", "Выберите станцию из списка для добавления.")
+            return
+
+        st = self._current_results[row]
+        stream_url = st.get("url_resolved") or st.get("url", "")
+        if not stream_url:
+            QMessageBox.warning(self, "Внимание", "У данной станции отсутствует рабочий URL.")
+            return
+
+        self._selected_data = {
+            "name": st.get("name", "Радиостанция").strip(),
+            "url": stream_url.strip(),
+            "genre": st.get("tags", "").replace(",", " / ").strip() or "Online Radio"
+        }
+        self.accept()
+
+    def _validate_manual(self):
         if not self.edit_name.text().strip():
             QMessageBox.warning(self, "Внимание", "Введите название станции.")
             return
         if not self.edit_url.text().strip():
             QMessageBox.warning(self, "Внимание", "Введите URL аудиопотока или ссылку.")
             return
+
+        self._selected_data = {
+            "name": self.edit_name.text().strip(),
+            "url": clean_and_normalize_stream_url(self.edit_url.text().strip()),
+            "genre": self.edit_genre.text().strip() or "Пользовательская"
+        }
         self.accept()
 
     def get_data(self) -> Dict[str, str]:
-        return {
-            "name": self.edit_name.text().strip(),
-            "url": clean_and_normalize_stream_url(self.edit_url.text().strip()),
-            "genre": self.edit_genre.text().strip() or "Custom"
-        }
+        return self._selected_data or {}
 
 
 class FluentStationCard(CardWidget):
@@ -374,6 +712,13 @@ class FluentRadioInterface(QWidget):
         self.btn_open_browser.clicked.connect(self._open_url_in_browser)
         btn_bar.addWidget(self.btn_open_browser)
 
+        # Stream Debug & Error Copy button
+        self.btn_error_debug = TransparentToolButton(FluentIcon.INFO, self.card_np)
+        self.btn_error_debug.setFixedSize(34, 34)
+        self.btn_error_debug.setToolTip("Диагностика медиапотока и копирование деталей ошибки")
+        self.btn_error_debug.clicked.connect(self._show_stream_debug_dialog)
+        btn_bar.addWidget(self.btn_error_debug)
+
         np_layout.addLayout(btn_bar)
 
         layout.addWidget(self.card_np)
@@ -538,8 +883,16 @@ class FluentRadioInterface(QWidget):
         dlg = AddStationDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             data = dlg.get_data()
-            self.cfg.add_station(name=data["name"], url=data["url"], genre=data["genre"])
-            self._refresh_stations_list()
+            if data.get("name") and data.get("url"):
+                self.cfg.add_station(name=data["name"], url=data["url"], genre=data.get("genre", "Online Radio"))
+                self._refresh_stations_list()
+                InfoBar.success(
+                    title="Станция добавлена",
+                    content=f"«{data['name']}» успешно добавлена в список радиостанций.",
+                    parent=self,
+                    position=InfoBarPosition.TOP,
+                    duration=3000
+                )
 
     def _delete_station(self, station_data: Dict[str, Any]):
         name = station_data.get("name", "Радиостанция")
@@ -566,6 +919,7 @@ class FluentRadioInterface(QWidget):
             return
         self._last_played_url = url
         self._last_played_name = name
+        self.engine.radio.current_web_url = url
 
         self.lbl_station_name.setText(f"РАДИО: {name.upper()}")
         self.lbl_artist.setText("")
@@ -621,13 +975,14 @@ class FluentRadioInterface(QWidget):
 
     def _open_url_in_browser(self):
         """Opens the stream or video URL in the user's default web browser."""
-        raw_url = self.edit_url.text().strip()
+        # Top priority: what is currently loaded or playing in the player!
+        raw_url = getattr(self.engine.radio, "current_web_url", None) or self.engine.radio.current_url or self._last_played_url
         if not raw_url:
-            raw_url = getattr(self.engine.radio, "current_web_url", None) or self.engine.radio.current_url or self._last_played_url
+            raw_url = self.edit_url.text().strip()
         if not raw_url:
             InfoBar.warning(
-                title="Нет ссылки",
-                content="Вставьте ссылку на видео или трансляцию, чтобы открыть её в браузере.",
+                title="Нет активного потока",
+                content="Выберите радиостанцию из списка или вставьте ссылку, чтобы открыть её в браузере.",
                 parent=self,
                 position=InfoBarPosition.TOP,
                 duration=3500
@@ -742,14 +1097,63 @@ class FluentRadioInterface(QWidget):
             self._update_toggle_btn(playing=False)
         elif "Ошибка" in status:
             self._update_toggle_btn(playing=False)
-            self.lbl_track_title.setText("Не удалось загрузить поток. Нажмите «В браузере», чтобы открыть в интернете.")
-            InfoBar.warning(
-                title="Внимание к потоку",
-                content=f"{status}. Возможно, сервис заблокирован или временно недоступен. Вы можете открыть его кнопкой «В браузере».",
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=6000
-            )
+            self.lbl_track_title.setText("Не удалось воспроизвести поток. Вы можете открыть его в браузере или скопировать детали ошибки.")
+            self._show_stream_error_bar(status)
+
+    def _show_stream_error_bar(self, status: str):
+        """Displays a dedicated InfoBar with buttons to Copy Error, View Debug Details, or Open in Browser."""
+        bar = InfoBar(
+            icon=FluentIcon.INFO,
+            title="Ошибка медиапотока",
+            content=f"{status}. Сервер может быть временно недоступен или заблокирован провайдером.",
+            orient=Qt.Orientation.Vertical,
+            isClosable=True,
+            position=InfoBarPosition.TOP_RIGHT,
+            duration=12000,
+            parent=self
+        )
+        btn_copy = PushButton(FluentIcon.COPY, "Копировать ошибку", bar)
+        btn_copy.setFixedHeight(28)
+        btn_copy.clicked.connect(self._copy_error_details)
+
+        btn_debug = PushButton(FluentIcon.INFO, "Подробнее", bar)
+        btn_debug.setFixedHeight(28)
+        btn_debug.clicked.connect(self._show_stream_debug_dialog)
+
+        btn_browser = PushButton(FluentIcon.GLOBE, "В браузере", bar)
+        btn_browser.setFixedHeight(28)
+        btn_browser.clicked.connect(self._open_url_in_browser)
+
+        bar.addWidget(btn_copy)
+        bar.addWidget(btn_debug)
+        bar.addWidget(btn_browser)
+        bar.show()
+
+    def _copy_error_details(self):
+        """Copies full stream diagnostic details into Windows clipboard."""
+        err = self.engine.radio.get_last_error_details()
+        curr_url = getattr(self.engine.radio, "current_web_url", None) or self.engine.radio.current_url or self._last_played_url or "Unknown URL"
+        full_text = (
+            f"SoundFlow Studio Stream Diagnostic\n"
+            f"Название: {self.engine.radio.current_name or self._last_played_name or 'Поток'}\n"
+            f"URL: {curr_url}\n"
+            f"Статус: {self.lbl_status.text()}\n"
+            f"----------------------------------------\n"
+            f"Детали ошибки:\n{err}"
+        )
+        QApplication.clipboard().setText(full_text)
+        InfoBar.success(
+            title="Скопировано",
+            content="Технические детали ошибки скопированы в буфер обмена Windows.",
+            parent=self,
+            position=InfoBarPosition.TOP,
+            duration=3000
+        )
+
+    def _show_stream_debug_dialog(self):
+        """Opens modal dialog with detailed error trace and copy button."""
+        dlg = StreamDebugDialog(self.engine.radio, parent=self)
+        dlg.exec()
 
     def _on_slider_moved(self, val: int):
         duration = self.engine.radio.duration_sec
