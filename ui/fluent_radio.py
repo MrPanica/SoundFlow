@@ -7,7 +7,7 @@ thread-safe Qt signals, track time display, and playlist auto-advance.
 
 from typing import Dict, Any, Optional
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QUrl
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtGui import QDesktopServices, QMouseEvent
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QMessageBox, QDialog
@@ -16,10 +16,41 @@ from qfluentwidgets import (
     CardWidget, PrimaryPushButton, PushButton, TransparentToolButton,
     LineEdit, Slider, TitleLabel, SubtitleLabel, BodyLabel,
     CaptionLabel, FluentIcon, RoundMenu, Action, SwitchButton, ComboBox,
-    InfoBar, InfoBarPosition
+    InfoBar, InfoBarPosition, IconWidget
 )
 
 from core.radio_streamer import clean_and_normalize_stream_url
+
+
+class TimelineSlider(Slider):
+    """Fluent Slider for Timeline Scrubbing that emits seeking on click and drag-release."""
+    seekRequested = pyqtSignal(float)
+
+    def __init__(self, orientation=Qt.Orientation.Horizontal, parent=None):
+        super().__init__(orientation, parent)
+        self.is_scrubbing = False
+
+    def mousePressEvent(self, e: QMouseEvent):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.is_scrubbing = True
+            super().mousePressEvent(e)
+            val = self._posToValue(e.pos())
+            self.setValue(val)
+        else:
+            super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e: QMouseEvent):
+        if self.is_scrubbing:
+            super().mouseMoveEvent(e)
+        else:
+            super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e: QMouseEvent):
+        if e.button() == Qt.MouseButton.LeftButton and self.is_scrubbing:
+            self.is_scrubbing = False
+            ratio = self.value() / float(self.maximum()) if self.maximum() > 0 else 0.0
+            self.seekRequested.emit(ratio)
+        super().mouseReleaseEvent(e)
 
 
 class AddStationDialog(QDialog):
@@ -55,7 +86,7 @@ class AddStationDialog(QDialog):
         self.edit_genre.setFixedHeight(32)
         layout.addWidget(self.edit_genre)
 
-        hint = CaptionLabel("💡 Поддерживаются радиостанции (Icecast/MP3/AAC), ссылки YouTube, YouTube Shorts и Twitch.", self)
+        hint = CaptionLabel("Поддерживаются радиостанции (Icecast, MP3, AAC), ссылки YouTube, YouTube Shorts и Twitch.", self)
         hint.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 11px;")
         layout.addWidget(hint)
 
@@ -280,11 +311,11 @@ class FluentRadioInterface(QWidget):
         self.lbl_curr_time.setFixedWidth(40)
         tl_layout.addWidget(self.lbl_curr_time)
 
-        self.slider_progress = Slider(Qt.Orientation.Horizontal, self.timeline_box)
+        self.slider_progress = TimelineSlider(Qt.Orientation.Horizontal, self.timeline_box)
         self.slider_progress.setRange(0, 1000)
         self.slider_progress.setValue(0)
-        self.slider_progress.sliderPressed.connect(self._on_slider_pressed)
-        self.slider_progress.sliderReleased.connect(self._on_slider_released)
+        self.slider_progress.seekRequested.connect(self._on_slider_seek_requested)
+        self.slider_progress.sliderMoved.connect(self._on_slider_moved)
         tl_layout.addWidget(self.slider_progress, stretch=1)
 
         self.lbl_total_time = CaptionLabel("00:00", self.timeline_box)
@@ -306,7 +337,7 @@ class FluentRadioInterface(QWidget):
         btn_bar.addWidget(self.btn_prev)
 
         # Seek -10s
-        self.btn_seek_back = PushButton("⏪ -10с", self.card_np)
+        self.btn_seek_back = PushButton(FluentIcon.SKIP_BACK, "-10с", self.card_np)
         self.btn_seek_back.setFixedHeight(32)
         self.btn_seek_back.setToolTip("Перемотать на 10 секунд назад")
         self.btn_seek_back.clicked.connect(lambda: self.engine.radio.seek_relative(-10.0))
@@ -320,7 +351,7 @@ class FluentRadioInterface(QWidget):
         btn_bar.addWidget(self.btn_stop)
 
         # Seek +10s
-        self.btn_seek_fwd = PushButton("+10с ⏩", self.card_np)
+        self.btn_seek_fwd = PushButton(FluentIcon.SKIP_FORWARD, "+10с", self.card_np)
         self.btn_seek_fwd.setFixedHeight(32)
         self.btn_seek_fwd.setToolTip("Перемотать на 10 секунд вперед")
         self.btn_seek_fwd.clicked.connect(lambda: self.engine.radio.seek_relative(10.0))
@@ -365,8 +396,11 @@ class FluentRadioInterface(QWidget):
         mon_col.setSpacing(6)
 
         mon_header = QHBoxLayout()
-        mon_header.setSpacing(10)
-        lbl_mon_head = BodyLabel("🔊 Слышать самому", card_vol)
+        mon_header.setSpacing(8)
+        icon_mon = IconWidget(FluentIcon.VOLUME, card_vol)
+        icon_mon.setFixedSize(16, 16)
+        mon_header.addWidget(icon_mon)
+        lbl_mon_head = BodyLabel("Слышать самому", card_vol)
         lbl_mon_head.setStyleSheet("font-weight: 600; font-size: 13px;")
         mon_header.addWidget(lbl_mon_head)
         mon_header.addStretch()
@@ -405,8 +439,11 @@ class FluentRadioInterface(QWidget):
         mic_col.setSpacing(6)
 
         mic_header = QHBoxLayout()
-        mic_header.setSpacing(10)
-        lbl_mic_head = BodyLabel("🎙️ Транслировать в микрофон", card_vol)
+        mic_header.setSpacing(8)
+        icon_mic = IconWidget(FluentIcon.MICROPHONE, card_vol)
+        icon_mic.setFixedSize(16, 16)
+        mic_header.addWidget(icon_mic)
+        lbl_mic_head = BodyLabel("Транслировать в микрофон", card_vol)
         lbl_mic_head.setStyleSheet("font-weight: 600; font-size: 13px;")
         mic_header.addWidget(lbl_mic_head)
         mic_header.addStretch()
@@ -664,7 +701,7 @@ class FluentRadioInterface(QWidget):
         playlist_index = meta.get("playlist_index", 0)
 
         self.lbl_track_title.setText(title)
-        self.lbl_artist.setText(f"👤 {artist}" if artist else "")
+        self.lbl_artist.setText(artist if artist else "")
 
         # Playlist badge
         if playlist_count > 1:
@@ -714,28 +751,36 @@ class FluentRadioInterface(QWidget):
                 duration=6000
             )
 
-    def _on_slider_pressed(self):
-        self._is_user_scrubbing = True
-
-    def _on_slider_released(self):
-        self._is_user_scrubbing = False
+    def _on_slider_moved(self, val: int):
         duration = self.engine.radio.duration_sec
         if duration and duration > 0:
-            target_sec = (self.slider_progress.value() / 1000.0) * duration
+            curr_pos = (val / float(self.slider_progress.maximum())) * duration
+            m = int(curr_pos) // 60
+            s = int(curr_pos) % 60
+            self.lbl_curr_time.setText(f"{m:02d}:{s:02d}")
+
+    def _on_slider_seek_requested(self, ratio: float):
+        duration = self.engine.radio.duration_sec
+        if duration and duration > 0:
+            target_sec = ratio * duration
             self.engine.radio.seek_to(target_sec)
+            m = int(target_sec) // 60
+            s = int(target_sec) % 60
+            self.lbl_curr_time.setText(f"{m:02d}:{s:02d}")
 
     def _on_timer_tick(self):
         if self.engine.radio.is_playing:
             curr_pos = self.engine.radio.current_pos_sec
             duration = self.engine.radio.duration_sec
 
-            if not self._is_user_scrubbing and duration and duration > 0:
+            if not getattr(self.slider_progress, "is_scrubbing", False) and duration and duration > 0:
                 ratio = min(1.0, curr_pos / float(duration))
                 self.slider_progress.setValue(int(ratio * 1000))
 
-            m = int(curr_pos) // 60
-            s = int(curr_pos) % 60
-            self.lbl_curr_time.setText(f"{m:02d}:{s:02d}")
+            if not getattr(self.slider_progress, "is_scrubbing", False):
+                m = int(curr_pos) // 60
+                s = int(curr_pos) % 60
+                self.lbl_curr_time.setText(f"{m:02d}:{s:02d}")
 
     def _load_target_devices(self):
         """Loads available audio output devices for target microphone into combo box."""

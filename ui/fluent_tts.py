@@ -25,14 +25,14 @@ from core.tts_engine import TTSEngine, AVAILABLE_VOICES
 from core.voice_fx import VoiceFXProcessor, BUILTIN_PRESETS
 
 TTS_FX_OPTIONS = [
-    ("normal", "🎭 Обычный (без эффекта)"),
-    ("robot", "🤖 Кибер-Робот"),
-    ("helium", "🐿️ Бурундук (Helium)"),
-    ("monster", "👹 Демон (Monster)"),
-    ("megaphone", "📢 Мегафон / Рация"),
-    ("echo", "🌌 Пространственное эхо"),
-    ("radio", "📻 Старое радио"),
-    ("alien", "👽 Пришелец")
+    ("normal", "Обычный (без эффекта)"),
+    ("robot", "Кибер-Робот"),
+    ("helium", "Бурундук (Helium)"),
+    ("monster", "Демон (Monster)"),
+    ("megaphone", "Мегафон / Рация"),
+    ("echo", "Пространственное эхо"),
+    ("radio", "Старое радио"),
+    ("alien", "Пришелец")
 ]
 
 
@@ -250,7 +250,7 @@ class FluentTTSInterface(QWidget):
         q_head.addWidget(self.btn_add_phrase)
         self.q_layout.addLayout(q_head)
 
-        hint = CaptionLabel("💡 Нажмите иконку ⚡ чтобы мгновенно сказать в микрофон. Правый клик (ПКМ) — удалить пресет.", self.card_quick)
+        hint = CaptionLabel("Нажмите иконку отправки, чтобы мгновенно сказать в микрофон. Правый клик (ПКМ) — удалить пресет.", self.card_quick)
         hint.setStyleSheet("color: rgba(255, 255, 255, 0.45);")
         self.q_layout.addWidget(hint)
 
@@ -292,20 +292,11 @@ class FluentTTSInterface(QWidget):
         # Voice / FX badge
         fx = preset.get("fx", "normal")
         fx_badge = ""
-        if fx == "robot":
-            fx_badge = "🤖 "
-        elif fx == "helium":
-            fx_badge = "🐿️ "
-        elif fx == "monster":
-            fx_badge = "👹 "
-        elif fx == "megaphone":
-            fx_badge = "📢 "
-        elif fx == "echo":
-            fx_badge = "🌌 "
-        elif fx == "radio":
-            fx_badge = "📻 "
-        elif fx == "alien":
-            fx_badge = "👽 "
+        if fx != "normal":
+            for fid, fname in TTS_FX_OPTIONS:
+                if fid == fx:
+                    fx_badge = f"[{fname}] "
+                    break
 
         text = preset.get("text", "")
         display_text = f"{fx_badge}{text}"

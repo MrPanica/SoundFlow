@@ -492,8 +492,10 @@ class RadioStreamer:
         if self.is_live or not self.duration_sec or self.duration_sec <= 0:
             return
         target = max(0.0, min(self.duration_sec - 1.0, target_sec))
-        self._seek_requested_pos = target
-        self._terminate_subprocesses()
+        self.current_pos_sec = target
+        if self.is_playing:
+            self._seek_requested_pos = target
+            self._terminate_subprocesses()
 
     def has_next(self) -> bool:
         return bool(self.playlist_queue and self.playlist_index < len(self.playlist_queue) - 1)

@@ -109,7 +109,7 @@ class FluentSettingsInterface(QWidget):
         g_layout.setContentsMargins(14, 10, 14, 10)
         g_layout.setSpacing(4)
 
-        lbl_g_title = CaptionLabel("💡 Схема работы аудио как в Soundpad и Voicemod:", guide_box)
+        lbl_g_title = CaptionLabel("Схема работы аудио как в Soundpad и Voicemod:", guide_box)
         lbl_g_title.setStyleSheet("font-weight: 700; color: #00f2fe;")
         g_layout.addWidget(lbl_g_title)
 
@@ -247,10 +247,10 @@ class FluentSettingsInterface(QWidget):
     def _update_drv_status(self):
         installed = DriverManager.is_driver_installed()
         if installed:
-            self.lbl_drv_status.setText("🟢 Статус: Аудиодрайвер установлен и готов к передаче в Discord / игры.")
+            self.lbl_drv_status.setText("Статус: Аудиодрайвер установлен и готов к передаче в Discord / игры.")
             self.btn_install_drv.setText("Переустановить драйвер")
         else:
-            self.lbl_drv_status.setText("⚠️ Статус: Драйвер не найден. Звук в микрофон собеседникам не идет.")
+            self.lbl_drv_status.setText("Статус: Драйвер не найден. Звук в микрофон собеседникам не идет.")
             self.btn_install_drv.setText("Установить официальный драйвер (VB-Cable)")
 
     def _load_devices(self):

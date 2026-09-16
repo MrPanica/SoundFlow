@@ -136,7 +136,7 @@ class FluentVoiceFXInterface(QWidget):
         prev_row = QHBoxLayout()
         prev_col = QVBoxLayout()
         prev_col.setSpacing(2)
-        prev_title = SubtitleLabel("🎧 Прослушать себя (Предпросмотр для себя)", card_mic)
+        prev_title = SubtitleLabel("Прослушать себя (Предпросмотр для себя)", card_mic)
         prev_desc = CaptionLabel("Вы услышите свой обработанный голос прямо в динамиках или наушниках в реальном времени", card_mic)
         prev_desc.setStyleSheet("color: rgba(255, 255, 255, 0.5);")
         prev_col.addWidget(prev_title)
@@ -224,7 +224,7 @@ class FluentVoiceFXInterface(QWidget):
         self.switch_robot.checkedChanged.connect(self._on_robot_toggle)
         rob_row.addWidget(self.switch_robot)
 
-        self.lbl_robot_freq = BodyLabel("🤖 Частота модуляции робота: 75 Гц", card_manual)
+        self.lbl_robot_freq = BodyLabel("Частота модуляции робота: 75 Гц", card_manual)
         self.lbl_robot_freq.setFixedWidth(280)
         self.slider_robot_freq = Slider(Qt.Orientation.Horizontal, card_manual)
         self.slider_robot_freq.setRange(20, 300)
@@ -242,7 +242,7 @@ class FluentVoiceFXInterface(QWidget):
         self.switch_mega.checkedChanged.connect(self._on_mega_toggle)
         mega_row.addWidget(self.switch_mega)
 
-        self.lbl_mega_drive = BodyLabel("📢 Мегафон / Перегруз (Drive): 2.8x", card_manual)
+        self.lbl_mega_drive = BodyLabel("Мегафон / Перегруз (Drive): 2.8x", card_manual)
         self.lbl_mega_drive.setFixedWidth(280)
         self.slider_mega_drive = Slider(Qt.Orientation.Horizontal, card_manual)
         self.slider_mega_drive.setRange(10, 50)
@@ -260,7 +260,7 @@ class FluentVoiceFXInterface(QWidget):
         self.switch_echo.checkedChanged.connect(self._on_echo_toggle)
         echo_row.addWidget(self.switch_echo)
 
-        self.lbl_echo_delay = BodyLabel("🌌 Задержка эхо: 250 мс", card_manual)
+        self.lbl_echo_delay = BodyLabel("Задержка эхо: 250 мс", card_manual)
         self.lbl_echo_delay.setFixedWidth(220)
         self.slider_echo_delay = Slider(Qt.Orientation.Horizontal, card_manual)
         self.slider_echo_delay.setRange(50, 700)
@@ -331,7 +331,7 @@ class FluentVoiceFXInterface(QWidget):
         p_head.addStretch()
         self.p_layout.addLayout(p_head)
 
-        p_hint = CaptionLabel("💡 Кликните по пресету для применения. Правый клик (ПКМ) на пользовательском пресете — удалить.", self.card_presets)
+        p_hint = CaptionLabel("Кликните по пресету для применения. Правый клик (ПКМ) на пользовательском пресете — удалить.", self.card_presets)
         p_hint.setStyleSheet("color: rgba(255, 255, 255, 0.45);")
         self.p_layout.addWidget(p_hint)
 
@@ -377,7 +377,7 @@ class FluentVoiceFXInterface(QWidget):
     def _on_robot_freq_change(self, val: int):
         if self._updating_ui:
             return
-        self.lbl_robot_freq.setText(f"🤖 Частота модуляции робота: {val} Гц")
+        self.lbl_robot_freq.setText(f"Частота модуляции робота: {val} Гц")
         self.engine.voice_fx.params["robot_freq"] = float(val)
 
     def _on_mega_toggle(self, checked: bool):
@@ -389,7 +389,7 @@ class FluentVoiceFXInterface(QWidget):
         if self._updating_ui:
             return
         drive = val / 10.0
-        self.lbl_mega_drive.setText(f"📢 Мегафон / Перегруз (Drive): {drive:.1f}x")
+        self.lbl_mega_drive.setText(f"Мегафон / Перегруз (Drive): {drive:.1f}x")
         self.engine.voice_fx.params["megaphone_drive"] = float(drive)
 
     def _on_echo_toggle(self, checked: bool):
@@ -400,7 +400,7 @@ class FluentVoiceFXInterface(QWidget):
     def _on_echo_delay_change(self, val: int):
         if self._updating_ui:
             return
-        self.lbl_echo_delay.setText(f"🌌 Задержка эхо: {val} мс")
+        self.lbl_echo_delay.setText(f"Задержка эхо: {val} мс")
         self.engine.voice_fx.params["echo_delay_ms"] = float(val)
 
     def _on_echo_feedback_change(self, val: int):
@@ -456,17 +456,17 @@ class FluentVoiceFXInterface(QWidget):
             self.switch_robot.setChecked(bool(params.get("robot_enabled", False)))
             rf = int(round(params.get("robot_freq", 75.0)))
             self.slider_robot_freq.setValue(rf)
-            self.lbl_robot_freq.setText(f"🤖 Частота модуляции робота: {rf} Гц")
+            self.lbl_robot_freq.setText(f"Частота модуляции робота: {rf} Гц")
 
             self.switch_mega.setChecked(bool(params.get("megaphone_enabled", False)))
             md = int(round(params.get("megaphone_drive", 2.8) * 10))
             self.slider_mega_drive.setValue(md)
-            self.lbl_mega_drive.setText(f"📢 Мегафон / Перегруз (Drive): {md/10.0:.1f}x")
+            self.lbl_mega_drive.setText(f"Мегафон / Перегруз (Drive): {md/10.0:.1f}x")
 
             self.switch_echo.setChecked(bool(params.get("echo_enabled", False)))
             ed = int(round(params.get("echo_delay_ms", 250.0)))
             self.slider_echo_delay.setValue(ed)
-            self.lbl_echo_delay.setText(f"🌌 Задержка эхо: {ed} мс")
+            self.lbl_echo_delay.setText(f"Задержка эхо: {ed} мс")
 
             ef = int(round(params.get("echo_feedback", 0.4) * 100))
             self.slider_echo_feedback.setValue(ef)
@@ -503,7 +503,7 @@ class FluentVoiceFXInterface(QWidget):
         for p in self.cfg.voice_presets:
             all_presets.append({
                 "id": p.get("id"),
-                "name": f"⭐ {p.get('name', 'Preset')}",
+                "name": p.get('name', 'Preset'),
                 "desc": "Пользовательский пресет",
                 "params": p.get("params", {}),
                 "custom": True

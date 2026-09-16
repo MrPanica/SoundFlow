@@ -449,21 +449,21 @@ class FluentMainWindow(FluentWindow):
             p = QPainter(pix_64)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-            # Dark rounded badge in bottom right
-            p.setBrush(QColor(10, 15, 28, 230))
+            # Dark rounded badge in TOP-RIGHT corner
+            p.setBrush(QColor(10, 15, 28, 235))
             p.setPen(QPen(QColor(0, 230, 118, 220), 1.5))
-            p.drawRoundedRect(QRectF(33, 33, 29, 29), 6, 6)
+            p.drawRoundedRect(QRectF(34, 2, 28, 28), 6, 6)
 
             # Equalizer bars with neon cyan-to-green gradient
-            grad = QLinearGradient(0, 36, 0, 58)
+            grad = QLinearGradient(0, 8, 0, 26)
             grad.setColorAt(0.0, QColor(0, 229, 255))
             grad.setColorAt(1.0, QColor(0, 255, 136))
             p.setBrush(QBrush(grad))
             p.setPen(Qt.PenStyle.NoPen)
 
-            xs = [37, 45, 53]
+            xs = [38, 46, 54]
             for x, h in zip(xs, heights):
-                p.drawRoundedRect(QRectF(x, 58 - h, 5, h), 2, 2)
+                p.drawRoundedRect(QRectF(x, 26 - h, 4, h), 1.5, 1.5)
             p.end()
 
             pix_32 = pix_64.scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
@@ -494,7 +494,7 @@ class FluentMainWindow(FluentWindow):
             QApplication.setWindowIcon(current_icon)
             if hasattr(self, "tray") and self.tray.isVisible():
                 self.tray.setIcon(current_icon)
-                self.tray.setToolTip("SoundFlow Studio - 🔊 Идет воспроизведение / звук в микрофон")
+                self.tray.setToolTip("SoundFlow Studio - Идет воспроизведение / трансляция")
         else:
             if self._is_taskbar_active:
                 # Smooth transition back to idle
