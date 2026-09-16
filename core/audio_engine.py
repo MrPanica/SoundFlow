@@ -366,8 +366,14 @@ class AudioEngine:
             # 3. Mix Radio Stream (monitor channel)
             if self.radio.is_playing:
                 radio_chunk = self.radio.get_chunk_monitor()
-                if radio_chunk is not None and len(radio_chunk) == frames and self.radio_monitor_enabled:
-                    out += radio_chunk * self.radio_monitor_vol
+                if radio_chunk is not None and self.radio_monitor_enabled:
+                    chunk_len = len(radio_chunk)
+                    if chunk_len == frames:
+                        out += radio_chunk * self.radio_monitor_vol
+                    elif chunk_len > frames:
+                        out += radio_chunk[:frames] * self.radio_monitor_vol
+                    elif chunk_len > 0:
+                        out[:chunk_len] += radio_chunk * self.radio_monitor_vol
 
             # 4. Mix TTS (monitor channel)
             if self.tts_active_sound:
@@ -431,8 +437,14 @@ class AudioEngine:
             # 4. Radio Stream (mic channel)
             if self.radio.is_playing:
                 radio_chunk = self.radio.get_chunk_mic()
-                if radio_chunk is not None and len(radio_chunk) == frames and self.radio_mic_enabled:
-                    out += radio_chunk * self.radio_mic_vol
+                if radio_chunk is not None and self.radio_mic_enabled:
+                    chunk_len = len(radio_chunk)
+                    if chunk_len == frames:
+                        out += radio_chunk * self.radio_mic_vol
+                    elif chunk_len > frames:
+                        out += radio_chunk[:frames] * self.radio_mic_vol
+                    elif chunk_len > 0:
+                        out[:chunk_len] += radio_chunk * self.radio_mic_vol
 
             # 5. TTS (mic channel)
             if self.tts_active_sound:

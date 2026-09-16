@@ -457,13 +457,14 @@ class AddStationDialog(QDialog):
 
 
 class FluentStationCard(CardWidget):
-    """Card for a single radio station preset."""
+    """Card for a single radio station preset with synchronized play/pause toggle."""
 
     def __init__(self, station_data: Dict[str, Any], on_play_cb, on_delete_cb, parent=None):
         super().__init__(parent)
         self.station_data = station_data
         self.on_play_cb = on_play_cb
         self.on_delete_cb = on_delete_cb
+        self.is_currently_playing = False
         self.setFixedHeight(68)
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -503,15 +504,29 @@ class FluentStationCard(CardWidget):
 
         layout.addLayout(info_col, stretch=1)
 
-        btn_tune = PushButton(FluentIcon.PLAY, "В эфир", self)
-        btn_tune.setFixedHeight(32)
-        btn_tune.clicked.connect(lambda: on_play_cb(self.station_data))
-        layout.addWidget(btn_tune)
+        self.btn_tune = PushButton(FluentIcon.PLAY, "В эфир", self)
+        self.btn_tune.setFixedHeight(32)
+        self.btn_tune.clicked.connect(lambda: self.on_play_cb(self.station_data))
+        layout.addWidget(self.btn_tune)
+
+    def set_playing_state(self, is_playing: bool):
+        """Switches the card's button between 'В эфир' (Play) and 'Пауза' (Pause)."""
+        self.is_currently_playing = is_playing
+        if is_playing:
+            self.btn_tune.setText("Пауза")
+            self.btn_tune.setIcon(FluentIcon.PAUSE)
+            self.btn_tune.setToolTip("Приостановить воспроизведение этой радиостанции")
+        else:
+            self.btn_tune.setText("В эфир")
+            self.btn_tune.setIcon(FluentIcon.PLAY)
+            self.btn_tune.setToolTip("Включить эту радиостанцию в эфир")
 
     def _show_context_menu(self, pos):
         menu = RoundMenu(parent=self)
 
-        act_play = Action(FluentIcon.PLAY, "Включить в эфир", self)
+        play_text = "Приостановить эфир" if self.is_currently_playing else "Включить в эфир"
+        play_icon = FluentIcon.PAUSE if self.is_currently_playing else FluentIcon.PLAY
+        act_play = Action(play_icon, play_text, self)
         act_play.triggered.connect(lambda: self.on_play_cb(self.station_data))
         menu.addAction(act_play)
 
@@ -540,6 +555,7 @@ class FluentRadioInterface(QWidget):
         self._last_played_url: Optional[str] = None
         self._last_played_name: Optional[str] = None
         self._is_user_scrubbing = False
+        self.station_cards: List[FluentStationCard] = []
 
         self._build_ui()
         self._load_target_devices()
@@ -862,9 +878,20 @@ class FluentRadioInterface(QWidget):
         self._refresh_stations_list()
 
     def _setup_stream_callbacks(self):
-        # Thread-safe redirection: worker thread emits signal, Qt dispatches to main GUI thread!
-        self.engine.radio.on_metadata_changed = lambda meta: self.sig_metadata_received.emit(meta)
-        self.engine.radio.on_status_changed = lambda status: self.sig_status_received.emit(status)
+        def _safe_meta(meta):
+            try:
+                self.sig_metadata_received.emit(meta)
+            except RuntimeError:
+                pass
+
+        def _safe_status(status):
+            try:
+                self.sig_status_received.emit(status)
+            except RuntimeError:
+                pass
+
+        self.engine.radio.on_metadata_changed = _safe_meta
+        self.engine.radio.on_status_changed = _safe_status
 
     def _refresh_stations_list(self):
         while self.s_layout.count():
@@ -873,11 +900,49 @@ class FluentRadioInterface(QWidget):
             if w:
                 w.deleteLater()
 
+        self.station_cards = []
         for s in self.cfg.stations:
-            card = FluentStationCard(s, self._play_station, self._delete_station, self.stations_container)
+            card = FluentStationCard(s, self._toggle_station, self._delete_station, self.stations_container)
+            self.station_cards.append(card)
             self.s_layout.addWidget(card)
 
         self.s_layout.addStretch()
+        self._update_station_cards_state()
+
+    def _toggle_station(self, station_data: Dict[str, Any]):
+        """Toggles play/pause for the clicked station preset, or switches to it if another stream was playing."""
+        url = station_data.get("url", "")
+        name = station_data.get("name", "Online Radio")
+        if not url:
+            return
+
+        curr_url = self.engine.radio.current_url or getattr(self.engine.radio, "current_web_url", None) or self._last_played_url
+        web_url = getattr(self.engine.radio, "current_web_url", None)
+        # If this exact station is currently playing -> PAUSE IT!
+        if self.engine.radio.is_playing and (curr_url == url or web_url == url):
+            self._toggle_play_pause()
+            return
+
+        # If this exact station is currently paused -> RESUME IT!
+        if getattr(self.engine.radio, "is_paused", False) and (curr_url == url or web_url == url):
+            self._toggle_play_pause()
+            return
+
+        # Otherwise -> start playing this new station!
+        self._play_station(station_data)
+
+    def _update_station_cards_state(self, is_playing: Optional[bool] = None):
+        """Syncs all station cards' play/pause buttons with active engine radio state."""
+        curr_url = self.engine.radio.current_url or getattr(self.engine.radio, "current_web_url", None) or self._last_played_url
+        web_url = getattr(self.engine.radio, "current_web_url", None)
+        if is_playing is None:
+            is_playing = bool(self.engine.radio.is_playing)
+        for card in getattr(self, "station_cards", []):
+            st_url = card.station_data.get("url", "")
+            if is_playing and st_url and (st_url == curr_url or (web_url and st_url == web_url)):
+                card.set_playing_state(True)
+            else:
+                card.set_playing_state(False)
 
     def _prompt_add_station(self):
         dlg = AddStationDialog(self)
@@ -919,15 +984,16 @@ class FluentRadioInterface(QWidget):
             return
         self._last_played_url = url
         self._last_played_name = name
+        self.engine.radio.current_url = url
         self.engine.radio.current_web_url = url
 
         self.lbl_station_name.setText(f"РАДИО: {name.upper()}")
         self.lbl_artist.setText("")
         self.lbl_status.setText("Подключение...")
         self.lbl_track_title.setText("Буферизация потока...")
-        self._update_toggle_btn(playing=True)
 
         self.engine.radio.play(url, name)
+        self._update_toggle_btn(playing=True)
 
     def _play_custom_url(self, autoplay: bool = True):
         raw_url = self.edit_url.text().strip()
@@ -1009,12 +1075,12 @@ class FluentRadioInterface(QWidget):
             target_url = self.engine.radio.current_url or self._last_played_url
             target_name = self.engine.radio.current_name or self._last_played_name
             if target_url:
-                self._update_toggle_btn(playing=True)
-                self.lbl_status.setText("Подключение...")
                 if getattr(self.engine.radio, "is_paused", False):
                     self.engine.radio.resume()
                 else:
                     self.engine.radio.play(target_url, target_name or "Пользовательский поток")
+                self._update_toggle_btn(playing=True)
+                self.lbl_status.setText("Подключение...")
             else:
                 QMessageBox.information(self, "Информация", "Выберите станцию или введите URL для воспроизведения.")
 
@@ -1039,6 +1105,7 @@ class FluentRadioInterface(QWidget):
             else:
                 self.btn_stop.setText("Воспроизвести")
             self.btn_stop.setIcon(FluentIcon.PLAY)
+        self._update_station_cards_state(is_playing=playing)
 
     def _play_next_track(self):
         self.engine.radio.play_next()

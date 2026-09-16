@@ -353,6 +353,7 @@ class RadioStreamer:
         self.last_error_details: str = ""
 
         # Threading
+        self._session_id: int = 0
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._ffmpeg_proc: Optional[subprocess.Popen] = None
@@ -373,7 +374,10 @@ class RadioStreamer:
         if self.is_playing:
             self.stop()
 
+        self._session_id += 1
+        session_id = self._session_id
         self.current_url = url
+        self.current_web_url = url
         self.current_name = name
         self.current_pos_sec = 0.0
         self.is_playing = False
@@ -383,17 +387,21 @@ class RadioStreamer:
 
         threading.Thread(
             target=self._prepare_worker,
-            args=(url, name),
+            args=(url, name, session_id),
             daemon=True,
             name="SoundFlow-StreamPrepareWorker"
         ).start()
 
-    def _prepare_worker(self, raw_url: str, default_name: str):
+    def _prepare_worker(self, raw_url: str, default_name: str, session_id: int):
+        if session_id != self._session_id:
+            return
         if self.on_status_changed:
             self.on_status_changed("Загрузка информации...")
 
         try:
             info = resolve_stream_info(raw_url)
+            if session_id != self._session_id:
+                return
             self.current_web_url = info.get("web_url") or raw_url
             self.current_title = info.get("title") or default_name
             self.current_artist = info.get("artist") or ""
@@ -436,7 +444,10 @@ class RadioStreamer:
         if self.is_playing:
             self.stop()
 
+        self._session_id += 1
+        session_id = self._session_id
         self.current_url = url
+        self.current_web_url = url
         self.current_name = name
         self.current_pos_sec = start_pos
         self.is_playing = True
@@ -447,15 +458,17 @@ class RadioStreamer:
 
         self._thread = threading.Thread(
             target=self._stream_worker,
-            args=(url, name, start_pos),
+            args=(url, name, start_pos, session_id),
             daemon=True,
             name="SoundFlow-StreamWorker"
-        ).start()
+        )
+        self._thread.start()
 
     def pause(self):
         """Pauses current stream, keeping track and playback position."""
         if not self.is_playing or self.is_paused:
             return
+        self._session_id += 1
         self.is_paused = True
         self.is_playing = False
         self._stop_event.set()
@@ -473,6 +486,7 @@ class RadioStreamer:
 
     def stop(self):
         """Completely stops playback and resets state."""
+        self._session_id += 1
         self.is_playing = False
         self.is_paused = False
         self.is_buffering = True
@@ -552,13 +566,17 @@ class RadioStreamer:
                 except queue.Empty:
                     break
 
-    def _stream_worker(self, raw_url: str, default_name: str, initial_pos: float):
+    def _stream_worker(self, raw_url: str, default_name: str, initial_pos: float, session_id: int):
         had_error = False
         try:
+            if session_id != self._session_id or self._stop_event.is_set():
+                return
             if self.on_status_changed:
                 self.on_status_changed("Поиск и разрешение потока...")
 
             info = resolve_stream_info(raw_url)
+            if session_id != self._session_id or self._stop_event.is_set():
+                return
             direct_url = info.get("url") or raw_url
             self.current_web_url = info.get("web_url") or raw_url
             self.current_title = info.get("title") or default_name
@@ -574,6 +592,9 @@ class RadioStreamer:
                         self.playlist_index = idx
                         break
 
+            if session_id != self._session_id:
+                return
+
             if self.on_metadata_changed:
                 self.on_metadata_changed({
                     "title": self.current_title,
@@ -588,7 +609,7 @@ class RadioStreamer:
                 self.on_title_changed(self.current_title)
 
             # Main streaming loop (with seek restart support)
-            while not self._stop_event.is_set():
+            while not self._stop_event.is_set() and session_id == self._session_id:
                 if self._seek_requested_pos is not None:
                     self.current_pos_sec = self._seek_requested_pos
                     self._seek_requested_pos = None
@@ -612,20 +633,20 @@ class RadioStreamer:
                 else:
                     success = self._run_miniaudio_stream(direct_url)
                     # Automatic fallback to FFmpeg if miniaudio fails on this stream
-                    if not success and FFMPEG_PATH and not self._stop_event.is_set() and self._seek_requested_pos is None:
+                    if not success and FFMPEG_PATH and not self._stop_event.is_set() and self._seek_requested_pos is None and session_id == self._session_id:
                         print(f"[RadioStreamer] Miniaudio stream failed for {direct_url}. Falling back to FFmpeg...")
-                        if self.on_status_changed:
+                        if self.on_status_changed and session_id == self._session_id:
                             self.on_status_changed("Резервный декодер (FFmpeg)...")
                         success = self._run_ffmpeg_stream(direct_url, self.current_pos_sec)
 
                 if not success:
                     had_error = True
-                    if self.on_status_changed and not self._stop_event.is_set():
+                    if self.on_status_changed and not self._stop_event.is_set() and session_id == self._session_id:
                         self.on_status_changed("Ошибка радиопотока")
                     break
 
                 # If EOF reached naturally and seek wasn't requested
-                if not self._stop_event.is_set() and self._seek_requested_pos is None:
+                if not self._stop_event.is_set() and self._seek_requested_pos is None and session_id == self._session_id:
                     if self.has_next():
                         self.playlist_index += 1
                         next_item = self.playlist_queue[self.playlist_index]
@@ -634,7 +655,7 @@ class RadioStreamer:
                         self.current_artist = next_item.get("artist", "")
                         self.duration_sec = next_item.get("duration")
                         self.current_pos_sec = 0.0
-                        if self.on_metadata_changed:
+                        if self.on_metadata_changed and session_id == self._session_id:
                             self.on_metadata_changed({
                                 "title": self.current_title,
                                 "artist": self.current_artist,
@@ -652,13 +673,14 @@ class RadioStreamer:
             tb = traceback.format_exc()
             self.last_error_details = f"Ошибка в рабочем потоке стримера:\nURL: {raw_url}\nИсключение: {e}\n\n{tb}"
             print(f"[RadioStreamer] Stream worker exception: {e}")
-            if self.on_status_changed:
+            if self.on_status_changed and session_id == self._session_id:
                 self.on_status_changed(f"Ошибка потока: {e}")
         finally:
-            self.is_playing = False
-            self.is_buffering = True
-            if self.on_status_changed and not self.is_paused and not had_error:
-                self.on_status_changed("Остановлено")
+            if session_id == self._session_id:
+                self.is_playing = False
+                self.is_buffering = True
+                if self.on_status_changed and not self.is_paused and not had_error:
+                    self.on_status_changed("Остановлено")
 
     def _run_ffmpeg_stream(self, stream_url: str, start_sec: float) -> bool:
         """Pipes float32 stereo PCM audio directly from FFmpeg stdout with producer backpressure."""
@@ -730,9 +752,11 @@ class RadioStreamer:
             total_chunks = 0
             while not self._stop_event.is_set() and self._seek_requested_pos is None:
                 # Producer-Consumer Backpressure:
-                # If queue already holds ~1.1 seconds of decoded audio (50 chunks), wait so we don't spin CPU at 100%
-                while self.queue_monitor.qsize() >= 50 and not self._stop_event.is_set() and self._seek_requested_pos is None:
-                    time.sleep(0.015)
+                # ONLY for non-live files / VOD to prevent infinite RAM buffering.
+                # Live streams are already 1.0x real-time pace from server and must NEVER be throttled!
+                if not self.is_live:
+                    while max(self.queue_monitor.qsize(), self.queue_mic.qsize()) >= 120 and not self._stop_event.is_set() and self._seek_requested_pos is None:
+                        time.sleep(0.015)
 
                 if self._stop_event.is_set() or self._seek_requested_pos is not None:
                     break
@@ -744,20 +768,21 @@ class RadioStreamer:
                 chunk = np.frombuffer(raw_bytes, dtype=np.float32).reshape(-1, 2)
                 total_chunks += 1
 
-                try:
-                    self.queue_monitor.put(chunk, block=False)
-                except queue.Full:
-                    pass
-
-                try:
-                    self.queue_mic.put(chunk, block=False)
-                except queue.Full:
-                    pass
+                for q in (self.queue_monitor, self.queue_mic):
+                    if q.full():
+                        try:
+                            q.get_nowait()
+                        except queue.Empty:
+                            pass
+                    try:
+                        q.put_nowait(chunk)
+                    except Exception:
+                        pass
 
                 # Update playback timestamp
                 self.current_pos_sec += (len(chunk) / float(self.sample_rate))
 
-                if self.is_buffering and self.queue_monitor.qsize() >= self.prebuffer_target:
+                if self.is_buffering and max(self.queue_monitor.qsize(), self.queue_mic.qsize()) >= self.prebuffer_target:
                     self.is_buffering = False
                     if self.on_status_changed:
                         self.on_status_changed("В эфире" if self.is_live else "Воспроизведение")
@@ -788,7 +813,7 @@ class RadioStreamer:
                 self._ffmpeg_proc = None
 
     def _run_miniaudio_stream(self, stream_url: str) -> bool:
-        """Streams live radio via miniaudio.IceCastClient with producer backpressure."""
+        """Streams live radio via miniaudio.IceCastClient without artificial backpressure stalls."""
         try:
             self.client = miniaudio.IceCastClient(stream_url, update_stream_title=self._on_icy_title)
             generator = miniaudio.stream_any(
@@ -807,27 +832,22 @@ class RadioStreamer:
                 if self._stop_event.is_set() or self._seek_requested_pos is not None:
                     break
 
-                # Producer backpressure: don't flood queue ahead of playback
-                while self.queue_monitor.qsize() >= 50 and not self._stop_event.is_set() and self._seek_requested_pos is None:
-                    time.sleep(0.015)
-
-                if self._stop_event.is_set() or self._seek_requested_pos is not None:
-                    break
-
                 data = np.frombuffer(samples, dtype=np.float32).reshape(-1, 2)
                 total_chunks += 1
-                try:
-                    self.queue_monitor.put(data, block=False)
-                except queue.Full:
-                    pass
 
-                try:
-                    self.queue_mic.put(data, block=False)
-                except queue.Full:
-                    pass
+                for q in (self.queue_monitor, self.queue_mic):
+                    if q.full():
+                        try:
+                            q.get_nowait()
+                        except queue.Empty:
+                            pass
+                    try:
+                        q.put_nowait(data)
+                    except Exception:
+                        pass
 
                 self.current_pos_sec += (len(data) / float(self.sample_rate))
-                if self.is_buffering and self.queue_monitor.qsize() >= self.prebuffer_target:
+                if self.is_buffering and max(self.queue_monitor.qsize(), self.queue_mic.qsize()) >= self.prebuffer_target:
                     self.is_buffering = False
                     if self.on_status_changed:
                         self.on_status_changed("В эфире")
@@ -873,7 +893,6 @@ class RadioStreamer:
         try:
             return self.queue_monitor.get_nowait()
         except queue.Empty:
-            self.is_buffering = True
             return None
 
     def get_chunk_mic(self) -> Optional[np.ndarray]:
