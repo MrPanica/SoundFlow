@@ -6,7 +6,8 @@ thread-safe Qt signals, track time display, and playlist auto-advance.
 """
 
 from typing import Dict, Any, Optional
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QUrl
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QMessageBox, QDialog
@@ -14,7 +15,8 @@ from PyQt6.QtWidgets import (
 from qfluentwidgets import (
     CardWidget, PrimaryPushButton, PushButton, TransparentToolButton,
     LineEdit, Slider, TitleLabel, SubtitleLabel, BodyLabel,
-    CaptionLabel, FluentIcon, RoundMenu, Action, SwitchButton, ComboBox
+    CaptionLabel, FluentIcon, RoundMenu, Action, SwitchButton, ComboBox,
+    InfoBar, InfoBarPosition
 )
 
 from core.radio_streamer import clean_and_normalize_stream_url
@@ -200,7 +202,33 @@ class FluentRadioInterface(QWidget):
         title_layout.addWidget(lbl_sub)
         layout.addLayout(title_layout)
 
-        # 1. Now Playing Player Card
+        # 1. Custom Stream / YouTube URL Input Card (Moved above player)
+        card_custom = CardWidget(self)
+        c_layout = QHBoxLayout(card_custom)
+        c_layout.setContentsMargins(16, 12, 16, 12)
+        c_layout.setSpacing(10)
+
+        self.edit_url = LineEdit(card_custom)
+        self.edit_url.setPlaceholderText("Вставьте ссылку: YouTube, YouTube Shorts, YouTube Music, Twitch, радио (mp3/aac)...")
+        self.edit_url.setFixedHeight(34)
+        self.edit_url.returnPressed.connect(self._play_custom_url)
+        c_layout.addWidget(self.edit_url, stretch=1)
+
+        self.btn_play_custom = PrimaryPushButton(FluentIcon.PLAY, "Запустить", card_custom)
+        self.btn_play_custom.setFixedHeight(34)
+        self.btn_play_custom.setToolTip("Начать онлайн-трансляцию потока")
+        self.btn_play_custom.clicked.connect(self._play_custom_url)
+        c_layout.addWidget(self.btn_play_custom)
+
+        self.btn_view = PushButton(FluentIcon.GLOBE, "Посмотреть", card_custom)
+        self.btn_view.setFixedHeight(34)
+        self.btn_view.setToolTip("Открыть ссылку на видео или трансляцию в браузере")
+        self.btn_view.clicked.connect(self._open_url_in_browser)
+        c_layout.addWidget(self.btn_view)
+
+        layout.addWidget(card_custom)
+
+        # 2. Now Playing Player Card
         self.card_np = CardWidget(self)
         np_layout = QVBoxLayout(self.card_np)
         np_layout.setContentsMargins(20, 16, 20, 16)
@@ -284,8 +312,8 @@ class FluentRadioInterface(QWidget):
         self.btn_seek_back.clicked.connect(lambda: self.engine.radio.seek_relative(-10.0))
         btn_bar.addWidget(self.btn_seek_back)
 
-        # Main Play/Stop Toggle button: "Остановить" <-> "Продолжить"
-        self.btn_stop = PrimaryPushButton(FluentIcon.PAUSE, "Остановить", self.card_np)
+        # Main Play/Stop Toggle button: Starts as "Воспроизвести" (Play)
+        self.btn_stop = PrimaryPushButton(FluentIcon.PLAY, "Воспроизвести", self.card_np)
         self.btn_stop.setFixedHeight(34)
         self.btn_stop.setFixedWidth(140)
         self.btn_stop.clicked.connect(self._toggle_play_pause)
@@ -310,25 +338,6 @@ class FluentRadioInterface(QWidget):
         np_layout.addLayout(btn_bar)
 
         layout.addWidget(self.card_np)
-
-        # 2. Custom Stream / YouTube URL Input Card
-        card_custom = CardWidget(self)
-        c_layout = QHBoxLayout(card_custom)
-        c_layout.setContentsMargins(16, 12, 16, 12)
-        c_layout.setSpacing(10)
-
-        self.edit_url = LineEdit(card_custom)
-        self.edit_url.setPlaceholderText("Вставьте ссылку: YouTube, YouTube Shorts, YouTube Music, Twitch, радио (mp3/aac)...")
-        self.edit_url.setFixedHeight(34)
-        self.edit_url.returnPressed.connect(self._play_custom_url)
-        c_layout.addWidget(self.edit_url, stretch=1)
-
-        self.btn_play_custom = PrimaryPushButton(FluentIcon.PLAY, "Запустить", card_custom)
-        self.btn_play_custom.setFixedHeight(34)
-        self.btn_play_custom.clicked.connect(self._play_custom_url)
-        c_layout.addWidget(self.btn_play_custom)
-
-        layout.addWidget(card_custom)
 
         # 3. Routing & Volume Control Card (Monitor / Mic switches + target device selector)
         card_vol = CardWidget(self)
@@ -550,6 +559,27 @@ class FluentRadioInterface(QWidget):
 
         self.engine.radio.play(url, name)
 
+    def _open_url_in_browser(self):
+        """Opens the stream or video URL in the user's default web browser."""
+        raw_url = self.edit_url.text().strip()
+        if not raw_url:
+            raw_url = getattr(self.engine.radio, "current_web_url", None) or self.engine.radio.current_url or self._last_played_url
+        if not raw_url:
+            InfoBar.warning(
+                title="Нет ссылки",
+                content="Вставьте ссылку на видео или трансляцию, чтобы открыть её в браузере.",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=3500
+            )
+            return
+
+        url = raw_url
+        if not url.startswith("http://") and not url.startswith("https://"):
+            url = "https://" + url
+
+        QDesktopServices.openUrl(QUrl(url))
+
     def _toggle_play_pause(self):
         """Toggles between 'Остановить' and 'Продолжить'."""
         if self.engine.radio.is_playing:
@@ -577,14 +607,17 @@ class FluentRadioInterface(QWidget):
         self.lbl_station_name.setText("РАДИО: НЕ ВОСПРОИЗВОДИТСЯ")
         self.lbl_artist.setText("")
         self.lbl_status.setText("Остановлено")
-        self.lbl_track_title.setText("Выберите станцию из списка или нажмите «Продолжить»...")
+        self.lbl_track_title.setText("Выберите станцию из списка или вставьте ссылку...")
 
     def _update_toggle_btn(self, playing: bool):
         if playing:
             self.btn_stop.setText("Остановить")
             self.btn_stop.setIcon(FluentIcon.PAUSE)
         else:
-            self.btn_stop.setText("Продолжить")
+            if self._last_played_url:
+                self.btn_stop.setText("Продолжить")
+            else:
+                self.btn_stop.setText("Воспроизвести")
             self.btn_stop.setIcon(FluentIcon.PLAY)
 
     def _play_next_track(self):
@@ -640,7 +673,14 @@ class FluentRadioInterface(QWidget):
             self._update_toggle_btn(playing=False)
         elif "Ошибка" in status:
             self._update_toggle_btn(playing=False)
-            self.lbl_track_title.setText("Не удалось воспроизвести поток. Проверьте URL или доступность видео.")
+            self.lbl_track_title.setText("Не удалось воспроизвести поток в плеере. Нажмите «Посмотреть», чтобы открыть в браузере.")
+            InfoBar.warning(
+                title="Внимание к потоку",
+                content=f"{status}. Возможно, сервис заблокирован или временно недоступен. Вы можете открыть его в браузере кнопкой «Посмотреть».",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=6000
+            )
 
     def _on_slider_pressed(self):
         self._is_user_scrubbing = True
@@ -670,15 +710,42 @@ class FluentRadioInterface(QWidget):
         devices = self.engine.get_audio_devices()
         self.combo_target_mic.blockSignals(True)
         self.combo_target_mic.clear()
-        self.combo_target_mic.addItem("-- Без трансляции в микрофон --", None)
+        self.combo_target_mic.addItem("-- Без трансляции в микрофон --", userData=None)
 
         saved_target = self.cfg.get("mic_target_device_id")
         selected_index = 0
+        cable_wasapi_idx = None
+        cable_any_idx = None
+
         for d in devices["outputs"]:
             idx = self.combo_target_mic.count()
-            self.combo_target_mic.addItem(f"[{d['hostapi']}] {d['name']}", d["id"])
+            self.combo_target_mic.addItem(f"[{d['hostapi']}] {d['name']}", userData=d["id"])
             if saved_target is not None and d["id"] == saved_target:
                 selected_index = idx
+
+            name_lower = d["name"].lower()
+            api_lower = d.get("hostapi", "").lower()
+            if "cable input" in name_lower or "vb-audio" in name_lower or "virtual" in name_lower:
+                if "wasapi" in api_lower and cable_wasapi_idx is None:
+                    cable_wasapi_idx = idx
+                elif cable_any_idx is None:
+                    cable_any_idx = idx
+
+        # Auto-select virtual cable (microphone target) by default if nothing saved
+        if (saved_target is None or selected_index == 0):
+            best_idx = cable_wasapi_idx if cable_wasapi_idx is not None else cable_any_idx
+            if best_idx is not None:
+                selected_index = best_idx
+                auto_dev_id = self.combo_target_mic.itemData(selected_index)
+                self.cfg.set("mic_target_device_id", auto_dev_id)
+                self.engine.mic_target_device_id = auto_dev_id
+                # Ensure engine streams know about target device
+                if self.engine.mic_target_stream is None and auto_dev_id is not None:
+                    self.engine.initialize_streams(
+                        monitor_device=self.engine.monitor_device_id,
+                        mic_target_device=auto_dev_id,
+                        mic_input_device=self.engine.mic_input_device_id
+                    )
 
         self.combo_target_mic.setCurrentIndex(selected_index)
         self.combo_target_mic.blockSignals(False)

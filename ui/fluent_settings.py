@@ -166,18 +166,18 @@ class FluentSettingsInterface(QWidget):
         buf_row = QHBoxLayout()
         buf_row.addWidget(BodyLabel("Размер буфера (задержка звука):", card_buf))
         self.combo_buf = ComboBox(card_buf)
-        self.combo_buf.addItem("512 сэмплов (~10 мс - ультранизкая задержка)", 512)
-        self.combo_buf.addItem("1024 сэмпла (~21 мс - стабильно, рекомендуемо)", 1024)
-        self.combo_buf.addItem("2048 сэмплов (~42 мс - без щелчков на слабых ПК)", 2048)
+        self.combo_buf.addItem("512 сэмплов (~10 мс - ультранизкая задержка)", userData=512)
+        self.combo_buf.addItem("1024 сэмпла (~21 мс - стабильно, рекомендуемо)", userData=1024)
+        self.combo_buf.addItem("2048 сэмплов (~42 мс - без щелчков на слабых ПК)", userData=2048)
         buf_row.addWidget(self.combo_buf, stretch=1)
         b_layout.addLayout(buf_row)
 
         rep_row = QHBoxLayout()
         rep_row.addWidget(BodyLabel("Длительность буфера моментального клипа:", card_buf))
         self.combo_rep = ComboBox(card_buf)
-        self.combo_rep.addItem("15 секунд", 15)
-        self.combo_rep.addItem("30 секунд (по умолчанию)", 30)
-        self.combo_rep.addItem("60 секунд", 60)
+        self.combo_rep.addItem("15 секунд", userData=15)
+        self.combo_rep.addItem("30 секунд (по умолчанию)", userData=30)
+        self.combo_rep.addItem("60 секунд", userData=60)
         rep_row.addWidget(self.combo_rep, stretch=1)
         b_layout.addLayout(rep_row)
 
@@ -258,17 +258,28 @@ class FluentSettingsInterface(QWidget):
 
         self.combo_monitor.clear()
         for d in devices["outputs"]:
-            self.combo_monitor.addItem(f"[{d['hostapi']}] {d['name']}", d["id"])
+            self.combo_monitor.addItem(f"[{d['hostapi']}] {d['name']}", userData=d["id"])
 
         self.combo_target_mic.clear()
-        self.combo_target_mic.addItem("-- Не использовать виртуальный микрофон --", None)
+        self.combo_target_mic.addItem("-- Не использовать отдельный виртуальный микрофон --", userData=None)
+        cable_wasapi_idx = None
+        cable_any_idx = None
+
         for d in devices["outputs"]:
-            self.combo_target_mic.addItem(f"[{d['hostapi']}] {d['name']}", d["id"])
+            idx = self.combo_target_mic.count()
+            self.combo_target_mic.addItem(f"[{d['hostapi']}] {d['name']}", userData=d["id"])
+            name_lower = d["name"].lower()
+            api_lower = d.get("hostapi", "").lower()
+            if "cable input" in name_lower or "vb-audio" in name_lower or "virtual" in name_lower:
+                if "wasapi" in api_lower and cable_wasapi_idx is None:
+                    cable_wasapi_idx = idx
+                elif cable_any_idx is None:
+                    cable_any_idx = idx
 
         self.combo_mic_in.clear()
-        self.combo_mic_in.addItem("-- Без физического микрофона --", None)
+        self.combo_mic_in.addItem("-- Без физического микрофона --", userData=None)
         for d in devices["inputs"]:
-            self.combo_mic_in.addItem(f"[{d['hostapi']}] {d['name']}", d["id"])
+            self.combo_mic_in.addItem(f"[{d['hostapi']}] {d['name']}", userData=d["id"])
 
         # Select saved
         saved_mon = self.cfg.get("monitor_device_id")
@@ -279,11 +290,21 @@ class FluentSettingsInterface(QWidget):
                     break
 
         saved_mic_target = self.cfg.get("mic_target_device_id")
+        selected_target_idx = 0
         if saved_mic_target is not None:
             for i in range(self.combo_target_mic.count()):
                 if self.combo_target_mic.itemData(i) == saved_mic_target:
-                    self.combo_target_mic.setCurrentIndex(i)
+                    selected_target_idx = i
                     break
+
+        # If no target saved, auto-select virtual cable
+        if selected_target_idx == 0 and saved_mic_target is None:
+            best_idx = cable_wasapi_idx if cable_wasapi_idx is not None else cable_any_idx
+            if best_idx is not None:
+                selected_target_idx = best_idx
+                self.cfg.set("mic_target_device_id", self.combo_target_mic.itemData(selected_target_idx))
+
+        self.combo_target_mic.setCurrentIndex(selected_target_idx)
 
         saved_mic_in = self.cfg.get("mic_input_device_id")
         if saved_mic_in is not None:

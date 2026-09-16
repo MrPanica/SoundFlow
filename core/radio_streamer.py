@@ -6,6 +6,7 @@ clean parameter normalization, queue backpressure (zero CPU spin),
 playback time tracking, seeking ([-10s] / [+10s]), and playlist auto-advance.
 """
 
+import sys
 import threading
 import queue
 import time
@@ -429,79 +430,91 @@ class RadioStreamer:
                     break
 
     def _stream_worker(self, raw_url: str, default_name: str, initial_pos: float):
-        if self.on_status_changed:
-            self.on_status_changed("Поиск и разрешение потока...")
+        had_error = False
+        try:
+            if self.on_status_changed:
+                self.on_status_changed("Поиск и разрешение потока...")
 
-        info = resolve_stream_info(raw_url)
-        direct_url = info.get("url") or raw_url
-        self.current_title = info.get("title") or default_name
-        self.current_artist = info.get("artist") or ""
-        self.duration_sec = info.get("duration")
-        self.is_live = info.get("is_live", True)
-        self.current_pos_sec = initial_pos
+            info = resolve_stream_info(raw_url)
+            direct_url = info.get("url") or raw_url
+            self.current_web_url = info.get("web_url") or raw_url
+            self.current_title = info.get("title") or default_name
+            self.current_artist = info.get("artist") or ""
+            self.duration_sec = info.get("duration")
+            self.is_live = info.get("is_live", True)
+            self.current_pos_sec = initial_pos
 
-        if info.get("playlist") and not self.playlist_queue:
-            self.playlist_queue = info["playlist"]
-            for idx, item in enumerate(self.playlist_queue):
-                if item.get("url") == raw_url or item.get("title") == self.current_title:
-                    self.playlist_index = idx
-                    break
+            if info.get("playlist") and not self.playlist_queue:
+                self.playlist_queue = info["playlist"]
+                for idx, item in enumerate(self.playlist_queue):
+                    if item.get("url") == raw_url or item.get("title") == self.current_title:
+                        self.playlist_index = idx
+                        break
 
-        if self.on_metadata_changed:
-            self.on_metadata_changed({
-                "title": self.current_title,
-                "artist": self.current_artist,
-                "duration": self.duration_sec,
-                "is_live": self.is_live,
-                "playlist_count": len(self.playlist_queue),
-                "playlist_index": self.playlist_index
-            })
+            if self.on_metadata_changed:
+                self.on_metadata_changed({
+                    "title": self.current_title,
+                    "artist": self.current_artist,
+                    "duration": self.duration_sec,
+                    "is_live": self.is_live,
+                    "playlist_count": len(self.playlist_queue),
+                    "playlist_index": self.playlist_index
+                })
 
-        if self.on_title_changed:
-            self.on_title_changed(self.current_title)
+            if self.on_title_changed:
+                self.on_title_changed(self.current_title)
 
-        # Main streaming loop (with seek restart support)
-        while not self._stop_event.is_set():
-            if self._seek_requested_pos is not None:
-                self.current_pos_sec = self._seek_requested_pos
-                self._seek_requested_pos = None
-                self._clear_queues()
+            # Main streaming loop (with seek restart support)
+            while not self._stop_event.is_set():
+                if self._seek_requested_pos is not None:
+                    self.current_pos_sec = self._seek_requested_pos
+                    self._seek_requested_pos = None
+                    self._clear_queues()
 
-            # Choose streaming pipeline
-            use_ffmpeg = bool(FFMPEG_PATH and (not self.is_live or "googlevideo.com" in direct_url or "twitch.tv" in direct_url or ".m3u8" in direct_url))
+                # Choose streaming pipeline
+                use_ffmpeg = bool(FFMPEG_PATH and (not self.is_live or "googlevideo.com" in direct_url or "twitch.tv" in direct_url or ".m3u8" in direct_url))
 
-            if use_ffmpeg:
-                success = self._run_ffmpeg_stream(direct_url, self.current_pos_sec)
-            else:
-                success = self._run_miniaudio_stream(direct_url)
-
-            # If EOF reached naturally and seek wasn't requested
-            if not self._stop_event.is_set() and self._seek_requested_pos is None:
-                if self.has_next():
-                    self.playlist_index += 1
-                    next_item = self.playlist_queue[self.playlist_index]
-                    direct_url, _ = resolve_stream_url(next_item["url"])
-                    self.current_title = next_item.get("title", "Next Track")
-                    self.current_artist = next_item.get("artist", "")
-                    self.duration_sec = next_item.get("duration")
-                    self.current_pos_sec = 0.0
-                    if self.on_metadata_changed:
-                        self.on_metadata_changed({
-                            "title": self.current_title,
-                            "artist": self.current_artist,
-                            "duration": self.duration_sec,
-                            "is_live": False,
-                            "playlist_count": len(self.playlist_queue),
-                            "playlist_index": self.playlist_index
-                        })
-                    continue
+                if use_ffmpeg:
+                    success = self._run_ffmpeg_stream(direct_url, self.current_pos_sec)
                 else:
+                    success = self._run_miniaudio_stream(direct_url)
+
+                if not success:
+                    had_error = True
                     break
 
-        self.is_playing = False
-        self.is_buffering = True
-        if self.on_status_changed and not self.is_paused:
-            self.on_status_changed("Остановлено")
+                # If EOF reached naturally and seek wasn't requested
+                if not self._stop_event.is_set() and self._seek_requested_pos is None:
+                    if self.has_next():
+                        self.playlist_index += 1
+                        next_item = self.playlist_queue[self.playlist_index]
+                        direct_url, _ = resolve_stream_url(next_item["url"])
+                        self.current_title = next_item.get("title", "Next Track")
+                        self.current_artist = next_item.get("artist", "")
+                        self.duration_sec = next_item.get("duration")
+                        self.current_pos_sec = 0.0
+                        if self.on_metadata_changed:
+                            self.on_metadata_changed({
+                                "title": self.current_title,
+                                "artist": self.current_artist,
+                                "duration": self.duration_sec,
+                                "is_live": False,
+                                "playlist_count": len(self.playlist_queue),
+                                "playlist_index": self.playlist_index
+                            })
+                        continue
+                    else:
+                        break
+        except Exception as e:
+            had_error = True
+            print(f"[RadioStreamer] Stream worker exception: {e}")
+            if self.on_status_changed:
+                self.on_status_changed(f"Ошибка потока: {e}")
+        finally:
+            self.is_playing = False
+            self.is_buffering = True
+            if self.on_status_changed and not self.is_paused and not had_error:
+                self.on_status_changed("Остановлено")
 
     def _run_ffmpeg_stream(self, stream_url: str, start_sec: float) -> bool:
         """Pipes float32 stereo PCM audio directly from FFmpeg stdout with producer backpressure."""
@@ -509,6 +522,7 @@ class RadioStreamer:
             FFMPEG_PATH,
             "-hide_banner",
             "-loglevel", "error",
+            "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "-reconnect", "1",
             "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5",
@@ -548,6 +562,7 @@ class RadioStreamer:
             if self.on_status_changed:
                 self.on_status_changed("В эфире" if self.is_live else "Воспроизведение")
 
+            total_chunks = 0
             while not self._stop_event.is_set() and self._seek_requested_pos is None:
                 # Producer-Consumer Backpressure:
                 # If queue already holds ~1.1 seconds of decoded audio (50 chunks), wait so we don't spin CPU at 100%
@@ -562,6 +577,7 @@ class RadioStreamer:
                     break
 
                 chunk = np.frombuffer(raw_bytes, dtype=np.float32).reshape(-1, 2)
+                total_chunks += 1
 
                 try:
                     self.queue_monitor.put(chunk, block=False)
@@ -581,11 +597,16 @@ class RadioStreamer:
                     if self.on_status_changed:
                         self.on_status_changed("В эфире" if self.is_live else "Воспроизведение")
 
+            if total_chunks == 0 and not self._stop_event.is_set() and self._seek_requested_pos is None:
+                if self.on_status_changed:
+                    self.on_status_changed("Ошибка: поток недоступен или заблокирован")
+                return False
+
             return True
         except Exception as e:
             print(f"[RadioStreamer] FFmpeg stream exception: {e}")
             if self.on_status_changed:
-                self.on_status_changed("Ошибка видеопотока")
+                self.on_status_changed(f"Ошибка видеопотока: {e}")
             return False
         finally:
             if self._ffmpeg_proc:

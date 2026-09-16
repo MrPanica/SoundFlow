@@ -106,9 +106,27 @@ class FluentMainWindow(FluentWindow):
         self.hotkeys = HotkeyManager()
 
         # 2. Setup Audio Streams
+        saved_target = self.cfg.get("mic_target_device_id")
+        if saved_target is None:
+            devs = self.engine.get_audio_devices()
+            cable_wasapi = None
+            cable_any = None
+            for d in devs.get("outputs", []):
+                n = d["name"].lower()
+                h = d.get("hostapi", "").lower()
+                if "cable input" in n or "vb-audio" in n or "virtual" in n:
+                    if "wasapi" in h and cable_wasapi is None:
+                        cable_wasapi = d["id"]
+                    elif cable_any is None:
+                        cable_any = d["id"]
+            best_target = cable_wasapi if cable_wasapi is not None else cable_any
+            if best_target is not None:
+                saved_target = best_target
+                self.cfg.set("mic_target_device_id", best_target)
+
         self.engine.initialize_streams(
             monitor_device=self.cfg.get("monitor_device_id"),
-            mic_target_device=self.cfg.get("mic_target_device_id"),
+            mic_target_device=saved_target,
             mic_input_device=self.cfg.get("mic_input_device_id")
         )
 
