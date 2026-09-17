@@ -270,10 +270,13 @@ class FluentSettingsInterface(QWidget):
             self.combo_target_mic.addItem(d["name"], userData=d["id"])
             name_lower = d["name"].lower()
             api_lower = d.get("hostapi", "").lower()
-            if "cable input" in name_lower or "vb-audio" in name_lower or "virtual" in name_lower:
+            if "cable input" in name_lower and "16ch" not in name_lower:
                 if "wasapi" in api_lower and cable_wasapi_idx is None:
                     cable_wasapi_idx = idx
                 elif cable_any_idx is None:
+                    cable_any_idx = idx
+            elif "cable input" in name_lower or "vb-audio" in name_lower or "virtual" in name_lower:
+                if cable_any_idx is None:
                     cable_any_idx = idx
 
         self.combo_mic_in.clear()
@@ -281,24 +284,39 @@ class FluentSettingsInterface(QWidget):
         for d in devices["inputs"]:
             self.combo_mic_in.addItem(d["name"], userData=d["id"])
 
-        # Select saved
+        defaults = AudioEngine.get_default_devices()
+
+        # Select saved monitor
         saved_mon = self.cfg.get("monitor_device_id")
+        selected_mon_idx = 0
         if saved_mon is not None:
             for i in range(self.combo_monitor.count()):
                 if self.combo_monitor.itemData(i) == saved_mon:
-                    self.combo_monitor.setCurrentIndex(i)
+                    selected_mon_idx = i
                     break
+        if selected_mon_idx == 0 and defaults.get("monitor") is not None:
+            for i in range(self.combo_monitor.count()):
+                if self.combo_monitor.itemData(i) == defaults["monitor"]:
+                    selected_mon_idx = i
+                    self.cfg.set("monitor_device_id", defaults["monitor"])
+                    break
+        self.combo_monitor.setCurrentIndex(selected_mon_idx)
 
+        # Select saved mic target
         saved_mic_target = self.cfg.get("mic_target_device_id")
         selected_target_idx = 0
         if saved_mic_target is not None:
+            # Check if saved target is 16ch
+            tgt_name = ""
             for i in range(self.combo_target_mic.count()):
                 if self.combo_target_mic.itemData(i) == saved_mic_target:
-                    selected_target_idx = i
+                    tgt_name = self.combo_target_mic.itemText(i).lower()
+                    if "16ch" not in tgt_name:
+                        selected_target_idx = i
                     break
 
-        # If no target saved, auto-select virtual cable
-        if selected_target_idx == 0 and saved_mic_target is None:
+        # If no target saved or was 16ch, auto-select standard virtual cable
+        if selected_target_idx == 0:
             best_idx = cable_wasapi_idx if cable_wasapi_idx is not None else cable_any_idx
             if best_idx is not None:
                 selected_target_idx = best_idx
@@ -306,12 +324,24 @@ class FluentSettingsInterface(QWidget):
 
         self.combo_target_mic.setCurrentIndex(selected_target_idx)
 
+        # Select saved mic input
         saved_mic_in = self.cfg.get("mic_input_device_id")
+        selected_mic_idx = 0
         if saved_mic_in is not None:
             for i in range(self.combo_mic_in.count()):
                 if self.combo_mic_in.itemData(i) == saved_mic_in:
-                    self.combo_mic_in.setCurrentIndex(i)
+                    selected_mic_idx = i
                     break
+
+        # If no microphone saved, auto-select default physical microphone
+        if selected_mic_idx == 0 and defaults.get("mic_input") is not None:
+            for i in range(self.combo_mic_in.count()):
+                if self.combo_mic_in.itemData(i) == defaults["mic_input"]:
+                    selected_mic_idx = i
+                    self.cfg.set("mic_input_device_id", defaults["mic_input"])
+                    break
+
+        self.combo_mic_in.setCurrentIndex(selected_mic_idx)
 
         cur_buf = self.cfg.get("buffer_size", 1024)
         for i in range(self.combo_buf.count()):

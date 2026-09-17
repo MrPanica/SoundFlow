@@ -131,6 +131,13 @@ class FluentMainWindow(FluentWindow):
             mic_target_device=saved_target,
             mic_input_device=self.cfg.get("mic_input_device_id")
         )
+        # Sync auto-resolved device IDs back to config so they persist cleanly
+        if self.engine.monitor_device_id is not None:
+            self.cfg.set("monitor_device_id", self.engine.monitor_device_id)
+        if self.engine.mic_target_device_id is not None:
+            self.cfg.set("mic_target_device_id", self.engine.mic_target_device_id)
+        if self.engine.mic_input_device_id is not None:
+            self.cfg.set("mic_input_device_id", self.engine.mic_input_device_id)
 
         # 3. Check starter sounds
         self._check_starter_sounds()

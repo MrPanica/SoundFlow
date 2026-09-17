@@ -6,6 +6,7 @@ app loopback mixing, radio streams, TTS, and microphone DSP processing.
 
 import threading
 import time
+import queue
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Callable
 import numpy as np
@@ -177,9 +178,11 @@ class AudioEngine:
         self.mic_peak = 0.0
         self.mic_in_peak = 0.0
 
-        # Incoming microphone audio buffer
+        # Incoming microphone audio buffer and decoupled jitter queues
         self._mic_in_buffer = np.zeros((self.buffer_size, 2), dtype=np.float32)
         self._mic_processed_buffer = np.zeros((self.buffer_size, 2), dtype=np.float32)
+        self._mic_queue_monitor = queue.Queue(maxsize=4)
+        self._mic_queue_target = queue.Queue(maxsize=4)
 
         # Callback for sound play state changes: func(sound_id: str, is_playing: bool)
         self.on_sound_state_changed: Optional[Callable[[str, bool], None]] = None
@@ -250,31 +253,99 @@ class AudioEngine:
 
         return {"inputs": inputs, "outputs": outputs}
 
+    @classmethod
+    def get_default_devices(cls) -> Dict[str, Optional[int]]:
+        """Intelligently detects best default monitor, mic target, and mic input device IDs."""
+        devs = cls.get_audio_devices()
+        inputs = devs.get("inputs", [])
+        outputs = devs.get("outputs", [])
+
+        # 1. Best physical microphone (non-virtual, non-cable)
+        best_mic_in = None
+        for d in inputs:
+            n = d["name"].lower()
+            if not any(k in n for k in ["cable", "virtual", "стерео микшер", "stereo mix"]):
+                best_mic_in = d["id"]
+                break
+        if best_mic_in is None and inputs:
+            best_mic_in = inputs[0]["id"]
+
+        # 2. Best monitor output (headphones / speakers)
+        best_monitor = None
+        for d in outputs:
+            n = d["name"].lower()
+            if not any(k in n for k in ["cable", "virtual"]):
+                best_monitor = d["id"]
+                break
+        if best_monitor is None and outputs:
+            best_monitor = outputs[0]["id"]
+
+        # 3. Best virtual cable target (CABLE Input, avoiding 16ch if 2ch exists)
+        best_cable = None
+        for d in outputs:
+            n = d["name"].lower()
+            if "cable input" in n and "16ch" not in n:
+                best_cable = d["id"]
+                break
+        if best_cable is None:
+            for d in outputs:
+                n = d["name"].lower()
+                if "cable" in n or "virtual" in n:
+                    best_cable = d["id"]
+                    break
+
+        return {
+            "monitor": best_monitor,
+            "mic_target": best_cable,
+            "mic_input": best_mic_in
+        }
+
     def initialize_streams(
         self,
         monitor_device: Optional[int] = None,
         mic_target_device: Optional[int] = None,
         mic_input_device: Optional[int] = None
     ):
-        """Initializes or updates the audio output and input streams."""
+        """Initializes or updates the audio output and input streams with auto-detection fallback."""
         self.stop_streams()
 
+        defaults = self.get_default_devices()
+        devs = self.get_audio_devices()
+        valid_input_ids = {d["id"] for d in devs.get("inputs", [])}
+        valid_output_ids = {d["id"] for d in devs.get("outputs", [])}
+
+        # Resolve monitor device
+        if monitor_device is None or monitor_device not in valid_output_ids:
+            monitor_device = defaults.get("monitor")
         self.monitor_device_id = monitor_device
+
+        # Resolve mic target device
+        if mic_target_device is None or mic_target_device not in valid_output_ids:
+            mic_target_device = defaults.get("mic_target")
+        else:
+            tgt_name = next((d["name"].lower() for d in devs.get("outputs", []) if d["id"] == mic_target_device), "")
+            if "16ch" in tgt_name and defaults.get("mic_target") is not None:
+                mic_target_device = defaults.get("mic_target")
         self.mic_target_device_id = mic_target_device
+
+        # Resolve mic input device
+        if mic_input_device is None or mic_input_device not in valid_input_ids:
+            mic_input_device = defaults.get("mic_input")
         self.mic_input_device_id = mic_input_device
 
         # 1. Open Monitor Output Stream
-        try:
-            self.monitor_stream = sd.OutputStream(
-                device=self.monitor_device_id,
-                channels=2,
-                samplerate=self.sample_rate,
-                blocksize=self.buffer_size,
-                callback=self._monitor_callback
-            )
-            self.monitor_stream.start()
-        except Exception as e:
-            print(f"[AudioEngine] Failed to start monitor stream on device {self.monitor_device_id}: {e}")
+        if self.monitor_device_id is not None:
+            try:
+                self.monitor_stream = sd.OutputStream(
+                    device=self.monitor_device_id,
+                    channels=2,
+                    samplerate=self.sample_rate,
+                    blocksize=self.buffer_size,
+                    callback=self._monitor_callback
+                )
+                self.monitor_stream.start()
+            except Exception as e:
+                print(f"[AudioEngine] Failed to start monitor stream on device {self.monitor_device_id}: {e}")
 
         # 2. Open Target Mic Output Stream (if specified and different)
         if self.mic_target_device_id is not None and self.mic_target_device_id != self.monitor_device_id:
@@ -290,19 +361,68 @@ class AudioEngine:
             except Exception as e:
                 print(f"[AudioEngine] Failed to start mic target stream on device {self.mic_target_device_id}: {e}")
 
-        # 3. Open Microphone Input Stream (if selected)
+        # 3. Open Microphone Input Stream
         if self.mic_input_device_id is not None:
+            self.start_mic_input(self.mic_input_device_id)
+
+    def start_mic_input(self, device_id: Optional[int] = None) -> bool:
+        """Starts or restarts the physical microphone input stream."""
+        if device_id is not None:
+            self.mic_input_device_id = device_id
+        elif self.mic_input_device_id is None:
+            self.mic_input_device_id = self.get_default_devices().get("mic_input")
+
+        if self.mic_input_device_id is None:
+            print("[AudioEngine] No valid microphone input device available.")
+            return False
+
+        if self.mic_input_stream is not None:
             try:
-                self.mic_input_stream = sd.InputStream(
-                    device=self.mic_input_device_id,
-                    channels=1,
-                    samplerate=self.sample_rate,
-                    blocksize=self.buffer_size,
-                    callback=self._mic_input_callback
-                )
-                self.mic_input_stream.start()
-            except Exception as e:
-                print(f"[AudioEngine] Failed to start mic input stream: {e}")
+                if self.mic_input_stream.active and getattr(self.mic_input_stream, "device", None) == self.mic_input_device_id:
+                    return True
+                self.mic_input_stream.stop()
+                self.mic_input_stream.close()
+            except Exception:
+                pass
+            self.mic_input_stream = None
+
+        self._clear_mic_queues()
+
+        try:
+            self.mic_input_stream = sd.InputStream(
+                device=self.mic_input_device_id,
+                channels=1,
+                samplerate=self.sample_rate,
+                blocksize=self.buffer_size,
+                callback=self._mic_input_callback
+            )
+            self.mic_input_stream.start()
+            print(f"[AudioEngine] Microphone input stream started on device {self.mic_input_device_id}")
+            return True
+        except Exception as e:
+            print(f"[AudioEngine] Failed to start mic input stream on device {self.mic_input_device_id}: {e}")
+            self.mic_input_stream = None
+            return False
+
+    def stop_mic_input(self):
+        """Stops the microphone input stream."""
+        if self.mic_input_stream is not None:
+            try:
+                self.mic_input_stream.stop()
+                self.mic_input_stream.close()
+            except Exception:
+                pass
+            self.mic_input_stream = None
+        self._clear_mic_queues()
+        self.mic_in_peak = 0.0
+
+    def _clear_mic_queues(self):
+        for q in (self._mic_queue_monitor, self._mic_queue_target):
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
 
     def stop_streams(self):
         """Safely stops and closes all active streams."""
@@ -316,10 +436,11 @@ class AudioEngine:
         self.monitor_stream = None
         self.mic_target_stream = None
         self.mic_input_stream = None
+        self._clear_mic_queues()
 
     # ---------------- Callbacks ----------------
     def _mic_input_callback(self, indata, frames, time_info, status):
-        """Receives raw microphone data, processes DSP effects once, and stores in intermediate buffer."""
+        """Receives raw microphone data, processes DSP effects once, and distributes to queues."""
         if status:
             pass
         mono = indata[:, 0]
@@ -330,9 +451,33 @@ class AudioEngine:
         raw_stereo = np.column_stack([mono, mono])
         self._mic_in_buffer = raw_stereo
         if self.mic_passthrough_enabled:
-            self._mic_processed_buffer = self.voice_fx.process(raw_stereo)
+            processed = self.voice_fx.process(raw_stereo)
         else:
-            self._mic_processed_buffer = raw_stereo
+            processed = raw_stereo
+        self._mic_processed_buffer = processed
+
+        # Push to monitor preview queue
+        if self.mic_monitor_preview:
+            if self._mic_queue_monitor.full():
+                try:
+                    self._mic_queue_monitor.get_nowait()
+                except queue.Empty:
+                    pass
+            try:
+                self._mic_queue_monitor.put_nowait(processed)
+            except queue.Full:
+                pass
+
+        # Push to mic target queue
+        if self._mic_queue_target.full():
+            try:
+                self._mic_queue_target.get_nowait()
+            except queue.Empty:
+                pass
+        try:
+            self._mic_queue_target.put_nowait(processed)
+        except queue.Full:
+            pass
 
     def _monitor_callback(self, outdata, frames, time_info, status):
         """Mixes audio for the user's headphones/speakers."""
@@ -387,7 +532,18 @@ class AudioEngine:
 
             # 5. Mix Live Microphone Preview ("Hear Myself" in headphones)
             if self.mic_passthrough_enabled and self.mic_monitor_preview:
-                out += self._mic_processed_buffer[:frames] * self.mic_preview_volume
+                try:
+                    mic_chunk = self._mic_queue_monitor.get_nowait()
+                    chunk_len = len(mic_chunk)
+                    if chunk_len == frames:
+                        out += mic_chunk * self.mic_preview_volume
+                    elif chunk_len > frames:
+                        out += mic_chunk[:frames] * self.mic_preview_volume
+                    elif chunk_len > 0:
+                        out[:chunk_len] += mic_chunk * self.mic_preview_volume
+                except queue.Empty:
+                    if len(self._mic_processed_buffer) >= frames:
+                        out += self._mic_processed_buffer[:frames] * self.mic_preview_volume
 
         # Apply master monitor volume
         out *= self.master_monitor_volume
@@ -410,7 +566,18 @@ class AudioEngine:
 
             # 1. Microphone Passthrough + DSP Effects
             if self.mic_passthrough_enabled:
-                out += self._mic_processed_buffer[:frames]
+                try:
+                    mic_chunk = self._mic_queue_target.get_nowait()
+                    chunk_len = len(mic_chunk)
+                    if chunk_len == frames:
+                        out += mic_chunk
+                    elif chunk_len > frames:
+                        out += mic_chunk[:frames]
+                    elif chunk_len > 0:
+                        out[:chunk_len] += mic_chunk
+                except queue.Empty:
+                    if len(self._mic_processed_buffer) >= frames:
+                        out += self._mic_processed_buffer[:frames]
 
             # 2. Soundboard sounds (mic channel)
             finished_ids = []

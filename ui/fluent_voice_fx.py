@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 from qfluentwidgets import (
     CardWidget, SwitchButton, Slider, TitleLabel, SubtitleLabel,
     BodyLabel, CaptionLabel, PushButton, PrimaryPushButton,
-    FluentIcon, LineEdit, RoundMenu, Action
+    FluentIcon, LineEdit, RoundMenu, Action, ComboBox
 )
 
 from .widgets import VUMeterWidget
@@ -76,6 +76,7 @@ class FluentVoiceFXInterface(QWidget):
         self._updating_ui = False
 
         self._build_ui()
+        self._populate_mic_devices()
 
         self.meter_timer = QTimer(self)
         self.meter_timer.timeout.connect(self._update_meters)
@@ -114,6 +115,24 @@ class FluentVoiceFXInterface(QWidget):
         m_layout = QVBoxLayout(card_mic)
         m_layout.setContentsMargins(20, 16, 20, 16)
         m_layout.setSpacing(12)
+
+        # Microphone Device Selector Row
+        mic_dev_row = QHBoxLayout()
+        mic_dev_col = QVBoxLayout()
+        mic_dev_col.setSpacing(2)
+        dev_title = SubtitleLabel("Входной физический микрофон", card_mic)
+        dev_desc = CaptionLabel("Устройство захвата вашего реального голоса для обработки и трансляции", card_mic)
+        dev_desc.setStyleSheet("color: rgba(255, 255, 255, 0.5);")
+        mic_dev_col.addWidget(dev_title)
+        mic_dev_col.addWidget(dev_desc)
+        mic_dev_row.addLayout(mic_dev_col, stretch=1)
+
+        self.combo_mic = ComboBox(card_mic)
+        self.combo_mic.setMinimumWidth(320)
+        self.combo_mic.setFixedHeight(34)
+        self.combo_mic.currentIndexChanged.connect(self._on_mic_device_selected)
+        mic_dev_row.addWidget(self.combo_mic)
+        m_layout.addLayout(mic_dev_row)
 
         sw_row = QHBoxLayout()
         sw_col = QVBoxLayout()
@@ -415,14 +434,57 @@ class FluentVoiceFXInterface(QWidget):
         self.lbl_gate.setText(f"Шумоподавитель (Noise Gate): {val} dB")
         self.engine.voice_fx.set_gate_threshold(float(val))
 
+    def _populate_mic_devices(self):
+        self._updating_ui = True
+        try:
+            self.combo_mic.clear()
+            devs = self.engine.get_audio_devices()
+            inputs = devs.get("inputs", [])
+
+            selected_idx = 0
+            curr_dev = self.engine.mic_input_device_id or self.cfg.get("mic_input_device_id")
+
+            for idx, d in enumerate(inputs):
+                self.combo_mic.addItem(d["name"], userData=d["id"])
+                if curr_dev is not None and d["id"] == curr_dev:
+                    selected_idx = idx
+
+            if inputs:
+                self.combo_mic.setCurrentIndex(selected_idx)
+                chosen_id = self.combo_mic.itemData(selected_idx)
+                if self.engine.mic_input_device_id != chosen_id or not self.engine.mic_input_stream:
+                    self.engine.start_mic_input(chosen_id)
+                    self.cfg.set("mic_input_device_id", chosen_id)
+            else:
+                self.combo_mic.addItem("-- Микрофоны не найдены --", userData=None)
+        finally:
+            self._updating_ui = False
+
+    def _on_mic_device_selected(self, idx: int):
+        if self._updating_ui:
+            return
+        dev_id = self.combo_mic.currentData()
+        if dev_id is not None:
+            self.cfg.set("mic_input_device_id", dev_id)
+            self.engine.start_mic_input(dev_id)
+
     def _on_mic_toggle(self, checked: bool):
         self.engine.mic_passthrough_enabled = checked
-        if not checked and hasattr(self, 'switch_preview') and self.switch_preview.isChecked():
-            self.switch_preview.setChecked(False)
+        if checked:
+            if not self.engine.mic_input_stream or not self.engine.mic_input_stream.active:
+                dev_id = self.combo_mic.currentData() if hasattr(self, 'combo_mic') else None
+                self.engine.start_mic_input(dev_id)
+        else:
+            if hasattr(self, 'switch_preview') and self.switch_preview.isChecked():
+                self.switch_preview.setChecked(False)
 
     def _on_preview_toggle(self, checked: bool):
-        if checked and not self.switch_mic.isChecked():
-            self.switch_mic.setChecked(True)
+        if checked:
+            if not self.switch_mic.isChecked():
+                self.switch_mic.setChecked(True)
+            if not self.engine.mic_input_stream or not self.engine.mic_input_stream.active:
+                dev_id = self.combo_mic.currentData() if hasattr(self, 'combo_mic') else None
+                self.engine.start_mic_input(dev_id)
         self.engine.mic_monitor_preview = checked
 
     def _on_prev_vol_change(self, val: int):
