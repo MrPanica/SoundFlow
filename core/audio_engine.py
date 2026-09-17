@@ -18,11 +18,13 @@ try:
     from .app_capture import AppCaptureManager
     from .radio_streamer import RadioStreamer
     from .instant_replay import InstantReplayBuffer
+    from .ptt_controller import PTTController
 except ImportError:
     from core.voice_fx import VoiceFXProcessor
     from core.app_capture import AppCaptureManager
     from core.radio_streamer import RadioStreamer
     from core.instant_replay import InstantReplayBuffer
+    from core.ptt_controller import PTTController
 
 
 class ActiveSound:
@@ -155,13 +157,13 @@ class AudioEngine:
         self.app_stream_mic_vol = 1.0
         self.radio_monitor_vol = 0.7
         self.radio_mic_vol = 0.9
-        self.radio_monitor_enabled = True
-        self.radio_mic_enabled = True
+        self._radio_monitor_enabled = True
+        self._radio_mic_enabled = True
         self.tts_monitor_vol = 0.8
         self.tts_mic_vol = 1.0
 
         # Features state
-        self.mic_passthrough_enabled = False
+        self.mic_passthrough_enabled = True
         self.mic_monitor_preview = False
         self.mic_preview_volume = 1.0
         self.app_stream_enabled = False
@@ -184,8 +186,49 @@ class AudioEngine:
         self._mic_queue_monitor = queue.Queue(maxsize=4)
         self._mic_queue_target = queue.Queue(maxsize=4)
 
+        # Voice recorder state
+        self.mic_recording_active = False
+        self.mic_recording_start_time = 0.0
+        self._mic_recording_chunks: List[np.ndarray] = []
+
         # Callback for sound play state changes: func(sound_id: str, is_playing: bool)
         self.on_sound_state_changed: Optional[Callable[[str, bool], None]] = None
+        # Callback for mic target device changes: func(device_id: Optional[int])
+        self.on_mic_target_changed: Optional[Callable[[Optional[int]], None]] = None
+
+        # Voice Ducking state
+        self.ducking_enabled = True
+        self.ducking_amount = 0.25
+        self.ducking_threshold_db = -35.0
+        self._ducking_current_gain = 1.0
+        self._ducking_target_gain = 1.0
+        self._ducking_hold_counter = 0
+
+        # Loudness Normalization
+        self.auto_normalize_enabled = True
+
+        # Auto Push-to-Talk (PTT)
+        self.ptt = PTTController()
+
+    @property
+    def radio_monitor_enabled(self) -> bool:
+        return getattr(self, '_radio_monitor_enabled', True)
+
+    @radio_monitor_enabled.setter
+    def radio_monitor_enabled(self, val: bool):
+        self._radio_monitor_enabled = bool(val)
+        if hasattr(self, 'radio') and self.radio is not None:
+            self.radio.monitor_output_enabled = self._radio_monitor_enabled and (self.monitor_stream is not None)
+
+    @property
+    def radio_mic_enabled(self) -> bool:
+        return getattr(self, '_radio_mic_enabled', True)
+
+    @radio_mic_enabled.setter
+    def radio_mic_enabled(self, val: bool):
+        self._radio_mic_enabled = bool(val)
+        if hasattr(self, 'radio') and self.radio is not None:
+            self.radio.mic_output_enabled = self._radio_mic_enabled and (self.mic_target_stream is not None)
 
     @property
     def is_audio_active(self) -> bool:
@@ -203,6 +246,20 @@ class AudioEngine:
         if self.monitor_peak > 0.02 or self.mic_peak > 0.02:
             return True
         return False
+
+    @property
+    def radio_stream_peak(self) -> float:
+        """Returns the real-time peak volume of the radio/stream output [0.0, 1.0]."""
+        if hasattr(self, "radio") and self.radio is not None and self.radio.is_playing:
+            return getattr(self.radio, "current_peak", 0.0)
+        return 0.0
+
+    @property
+    def app_stream_peak(self) -> float:
+        """Returns the real-time peak volume of the captured application audio [0.0, 1.0]."""
+        if hasattr(self, "app_capture") and self.app_capture is not None and self.app_capture.is_capturing:
+            return getattr(self.app_capture, "current_peak", 0.0)
+        return 0.0
 
     # ---------------- Device Querying ----------------
     @staticmethod
@@ -300,11 +357,145 @@ class AudioEngine:
             "mic_input": best_mic_in
         }
 
+    @classmethod
+    def get_target_mic_devices(cls) -> List[Dict[str, Any]]:
+        """
+        Returns a filtered and ordered list of output devices suitable for streaming into microphone.
+        - Prioritizes virtual cables (CABLE Input, VoiceMeeter, etc.)
+        - Excludes broken 16-channel endpoints (e.g. CABLE In 16ch)
+        - Clearly differentiates virtual cables from physical playback devices
+        """
+        devs = cls.get_audio_devices()
+        outputs = devs.get("outputs", [])
+        cables = []
+        others = []
+
+        for d in outputs:
+            name_lower = d["name"].lower()
+            if "16ch" in name_lower:
+                continue
+
+            if any(k in name_lower for k in ["cable input", "vb-audio", "voicemeeter", "virtual cable", "line "]):
+                display_name = d["name"]
+                if "cable input" in name_lower:
+                    display_name = f"{d['name']} ⭐ [Для игр и Discord]"
+                cables.append({**d, "display_name": display_name, "is_virtual": True})
+            else:
+                display_name = f"{d['name']} (Физический выход)"
+                others.append({**d, "display_name": display_name, "is_virtual": False})
+
+        # Put virtual cables first so user immediately sees the right device
+        return cables + others
+
+    @classmethod
+    def populate_target_mic_combobox(cls, combo, current_dev_id: Optional[int] = None) -> int:
+        """
+        Populates a target microphone combo box with clean labels and auto-selects current or best cable.
+        Returns the selected index.
+        """
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("-- Без трансляции в микрофон --", userData=None)
+
+        devices = cls.get_target_mic_devices()
+        selected_idx = 0
+        cable_first_idx = None
+
+        for d in devices:
+            idx = combo.count()
+            combo.addItem(d["display_name"], userData=d["id"])
+            if d.get("is_virtual") and cable_first_idx is None:
+                cable_first_idx = idx
+            if current_dev_id is not None and d["id"] == current_dev_id:
+                selected_idx = idx
+
+        # If no specific device was saved or found, but virtual cable exists, auto-select it
+        if selected_idx == 0 and current_dev_id is None and cable_first_idx is not None:
+            selected_idx = cable_first_idx
+
+        combo.setCurrentIndex(selected_idx)
+        combo.blockSignals(False)
+        return selected_idx
+
+
+    def set_mic_target_device(self, device_id: Optional[int]) -> bool:
+        """
+        Safely changes or disables ONLY the target microphone output stream (e.g. VB-Audio CABLE Input),
+        without stopping or restarting monitor headphones or physical microphone streams.
+        """
+        # If requested device is identical and stream is active, nothing to do
+        if device_id == self.mic_target_device_id:
+            if device_id is None or (self.mic_target_stream is not None and self.mic_target_stream.active):
+                return True
+
+        # Stop existing target mic stream safely
+        if self.mic_target_stream is not None:
+            try:
+                self.mic_target_stream.stop()
+                self.mic_target_stream.close()
+            except Exception as e:
+                print(f"[AudioEngine] Note closing previous mic target stream: {e}")
+            self.mic_target_stream = None
+
+        self.mic_target_device_id = device_id
+
+        # If user selected None (-- Без трансляции в микрофон --)
+        if device_id is None:
+            if hasattr(self, 'radio') and self.radio is not None:
+                self.radio.mic_output_enabled = False
+            if self.on_mic_target_changed:
+                try:
+                    self.on_mic_target_changed(None)
+                except Exception:
+                    pass
+            print("[AudioEngine] Mic target broadcast disabled (device=None)")
+            return True
+
+        # Do not allow opening mic target stream on the exact same device as monitor (prevents dual-claim conflicts)
+        if self.monitor_device_id is not None and device_id == self.monitor_device_id:
+            print(f"[AudioEngine] Mic target {device_id} is identical to monitor device, skipping separate stream.")
+            if self.on_mic_target_changed:
+                try:
+                    self.on_mic_target_changed(device_id)
+                except Exception:
+                    pass
+            return True
+
+        try:
+            self.mic_target_stream = sd.OutputStream(
+                device=device_id,
+                channels=2,
+                samplerate=self.sample_rate,
+                blocksize=self.buffer_size,
+                callback=self._mic_target_callback
+            )
+            self.mic_target_stream.start()
+            if hasattr(self, 'radio') and self.radio is not None:
+                self.radio.mic_output_enabled = self._radio_mic_enabled
+            if self.on_mic_target_changed:
+                try:
+                    self.on_mic_target_changed(device_id)
+                except Exception:
+                    pass
+            print(f"[AudioEngine] Mic target stream started on device {device_id}")
+            return True
+        except Exception as e:
+            print(f"[AudioEngine] Failed to start mic target stream on device {device_id}: {e}")
+            self.mic_target_stream = None
+            self.mic_target_device_id = None
+            if self.on_mic_target_changed:
+                try:
+                    self.on_mic_target_changed(None)
+                except Exception:
+                    pass
+            return False
+
     def initialize_streams(
         self,
         monitor_device: Optional[int] = None,
         mic_target_device: Optional[int] = None,
-        mic_input_device: Optional[int] = None
+        mic_input_device: Optional[int] = None,
+        explicit_target_set: bool = False
     ):
         """Initializes or updates the audio output and input streams with auto-detection fallback."""
         self.stop_streams()
@@ -320,13 +511,13 @@ class AudioEngine:
         self.monitor_device_id = monitor_device
 
         # Resolve mic target device
-        if mic_target_device is None or mic_target_device not in valid_output_ids:
-            mic_target_device = defaults.get("mic_target")
-        else:
+        if mic_target_device is not None and mic_target_device in valid_output_ids:
             tgt_name = next((d["name"].lower() for d in devs.get("outputs", []) if d["id"] == mic_target_device), "")
             if "16ch" in tgt_name and defaults.get("mic_target") is not None:
                 mic_target_device = defaults.get("mic_target")
-        self.mic_target_device_id = mic_target_device
+        elif not explicit_target_set and mic_target_device is None:
+            # Only auto-fallback on initial setup if caller did not explicitly request None
+            mic_target_device = defaults.get("mic_target")
 
         # Resolve mic input device
         if mic_input_device is None or mic_input_device not in valid_input_ids:
@@ -344,22 +535,13 @@ class AudioEngine:
                     callback=self._monitor_callback
                 )
                 self.monitor_stream.start()
+                if hasattr(self, 'radio') and self.radio is not None:
+                    self.radio.monitor_output_enabled = self._radio_monitor_enabled
             except Exception as e:
                 print(f"[AudioEngine] Failed to start monitor stream on device {self.monitor_device_id}: {e}")
 
-        # 2. Open Target Mic Output Stream (if specified and different)
-        if self.mic_target_device_id is not None and self.mic_target_device_id != self.monitor_device_id:
-            try:
-                self.mic_target_stream = sd.OutputStream(
-                    device=self.mic_target_device_id,
-                    channels=2,
-                    samplerate=self.sample_rate,
-                    blocksize=self.buffer_size,
-                    callback=self._mic_target_callback
-                )
-                self.mic_target_stream.start()
-            except Exception as e:
-                print(f"[AudioEngine] Failed to start mic target stream on device {self.mic_target_device_id}: {e}")
+        # 2. Open Target Mic Output Stream safely via set_mic_target_device
+        self.set_mic_target_device(mic_target_device)
 
         # 3. Open Microphone Input Stream
         if self.mic_input_device_id is not None:
@@ -436,6 +618,9 @@ class AudioEngine:
         self.monitor_stream = None
         self.mic_target_stream = None
         self.mic_input_stream = None
+        if hasattr(self, 'radio') and self.radio is not None:
+            self.radio.monitor_output_enabled = False
+            self.radio.mic_output_enabled = False
         self._clear_mic_queues()
 
     # ---------------- Callbacks ----------------
@@ -447,14 +632,32 @@ class AudioEngine:
         # Calculate mic input peak for UI meter
         peak = float(np.max(np.abs(mono))) if len(mono) > 0 else 0.0
         self.mic_in_peak = peak
+
+        # Voice Ducking detection
+        if getattr(self, "ducking_enabled", True) and len(mono) > 0:
+            mic_rms = float(np.sqrt(np.mean(mono**2))) + 1e-9
+            mic_db = 20.0 * np.log10(mic_rms)
+            if mic_db > getattr(self, "ducking_threshold_db", -35.0):
+                self._ducking_target_gain = getattr(self, "ducking_amount", 0.25)
+                self._ducking_hold_counter = int(0.35 * self.sample_rate)
+            else:
+                if self._ducking_hold_counter > 0:
+                    self._ducking_hold_counter -= len(mono)
+                else:
+                    self._ducking_target_gain = 1.0
+
         # Stereo buffer
         raw_stereo = np.column_stack([mono, mono])
         self._mic_in_buffer = raw_stereo
-        if self.mic_passthrough_enabled:
+        if self.mic_passthrough_enabled or getattr(self, "mic_recording_active", False):
             processed = self.voice_fx.process(raw_stereo)
         else:
             processed = raw_stereo
         self._mic_processed_buffer = processed
+
+        if getattr(self, "mic_recording_active", False):
+            if hasattr(self, "_mic_recording_chunks"):
+                self._mic_recording_chunks.append(processed.copy())
 
         # Push to monitor preview queue
         if self.mic_monitor_preview:
@@ -483,6 +686,14 @@ class AudioEngine:
         """Mixes audio for the user's headphones/speakers."""
         out = np.zeros((frames, 2), dtype=np.float32)
 
+        # Smooth ducking gain
+        if getattr(self, "ducking_enabled", True):
+            alpha = 0.18 if self._ducking_target_gain < self._ducking_current_gain else 0.03
+            self._ducking_current_gain += (self._ducking_target_gain - self._ducking_current_gain) * alpha
+        else:
+            self._ducking_current_gain = 1.0
+        duck = self._ducking_current_gain
+
         with self._lock:
             mic_active = (self.mic_target_stream is not None)
 
@@ -490,35 +701,43 @@ class AudioEngine:
             finished_ids = []
             for sid, sound in list(self.active_sounds.items()):
                 mon_chunk = sound.read_chunk_monitor(frames)
-                out += mon_chunk * self.soundboard_monitor_vol
+                out += mon_chunk * self.soundboard_monitor_vol * duck
                 if not mic_active:
                     sound.finished_mic = True
                 if sound.is_finished:
                     finished_ids.append(sid)
 
             for sid in finished_ids:
-                if sid in self.active_sounds:
-                    del self.active_sounds[sid]
+                sound = self.active_sounds.pop(sid, None)
+                if sound and sound.play_mic:
+                    if hasattr(self, "ptt") and self.ptt:
+                        self.ptt.stop_broadcast()
                 if self.on_sound_state_changed:
                     self.on_sound_state_changed(sid, False)
 
             # 2. Mix App Audio Capture (monitor channel)
             if self.app_stream_enabled:
                 app_chunk = self.app_capture.get_chunk_monitor()
-                if app_chunk is not None and len(app_chunk) == frames:
-                    out += app_chunk * self.app_stream_monitor_vol
+                if app_chunk is not None:
+                    chunk_len = len(app_chunk)
+                    if chunk_len == frames:
+                        out += app_chunk * self.app_stream_monitor_vol * duck
+                    elif chunk_len > frames:
+                        out += app_chunk[:frames] * self.app_stream_monitor_vol * duck
+                    elif chunk_len > 0:
+                        out[:chunk_len] += app_chunk * self.app_stream_monitor_vol * duck
 
             # 3. Mix Radio Stream (monitor channel)
-            if self.radio.is_playing:
-                radio_chunk = self.radio.get_chunk_monitor()
-                if radio_chunk is not None and self.radio_monitor_enabled:
+            if self.radio.is_playing and self.radio_monitor_enabled:
+                radio_chunk = self.radio.read_frames_monitor(frames)
+                if radio_chunk is not None:
                     chunk_len = len(radio_chunk)
                     if chunk_len == frames:
-                        out += radio_chunk * self.radio_monitor_vol
+                        out += radio_chunk * self.radio_monitor_vol * duck
                     elif chunk_len > frames:
-                        out += radio_chunk[:frames] * self.radio_monitor_vol
+                        out += radio_chunk[:frames] * self.radio_monitor_vol * duck
                     elif chunk_len > 0:
-                        out[:chunk_len] += radio_chunk * self.radio_monitor_vol
+                        out[:chunk_len] += radio_chunk * self.radio_monitor_vol * duck
 
             # 4. Mix TTS (monitor channel)
             if self.tts_active_sound:
@@ -526,8 +745,10 @@ class AudioEngine:
                     self.tts_active_sound.finished_mic = True
                 if not self.tts_active_sound.finished_monitor:
                     tts_mon = self.tts_active_sound.read_chunk_monitor(frames)
-                    out += tts_mon * self.tts_monitor_vol
+                    out += tts_mon * self.tts_monitor_vol * duck
                 if self.tts_active_sound.is_finished:
+                    if self.tts_active_sound.play_mic and hasattr(self, "ptt") and self.ptt:
+                        self.ptt.stop_broadcast()
                     self.tts_active_sound = None
 
             # 5. Mix Live Microphone Preview ("Hear Myself" in headphones)
@@ -542,8 +763,7 @@ class AudioEngine:
                     elif chunk_len > 0:
                         out[:chunk_len] += mic_chunk * self.mic_preview_volume
                 except queue.Empty:
-                    if len(self._mic_processed_buffer) >= frames:
-                        out += self._mic_processed_buffer[:frames] * self.mic_preview_volume
+                    pass
 
         # Apply master monitor volume
         out *= self.master_monitor_volume
@@ -563,6 +783,7 @@ class AudioEngine:
 
         with self._lock:
             mon_active = (self.monitor_stream is not None)
+            duck = getattr(self, "_ducking_current_gain", 1.0)
 
             # 1. Microphone Passthrough + DSP Effects
             if self.mic_passthrough_enabled:
@@ -576,42 +797,49 @@ class AudioEngine:
                     elif chunk_len > 0:
                         out[:chunk_len] += mic_chunk
                 except queue.Empty:
-                    if len(self._mic_processed_buffer) >= frames:
-                        out += self._mic_processed_buffer[:frames]
+                    pass
 
             # 2. Soundboard sounds (mic channel)
             finished_ids = []
             for sid, sound in list(self.active_sounds.items()):
                 mic_chunk = sound.read_chunk_mic(frames)
-                out += mic_chunk * self.soundboard_mic_vol
+                out += mic_chunk * self.soundboard_mic_vol * duck
                 if not mon_active:
                     sound.finished_monitor = True
                 if sound.is_finished:
                     finished_ids.append(sid)
 
             for sid in finished_ids:
-                if sid in self.active_sounds:
-                    del self.active_sounds[sid]
+                sound = self.active_sounds.pop(sid, None)
+                if sound and sound.play_mic:
+                    if hasattr(self, "ptt") and self.ptt:
+                        self.ptt.stop_broadcast()
                 if self.on_sound_state_changed:
                     self.on_sound_state_changed(sid, False)
 
             # 3. App Audio Stream (mic channel)
             if self.app_stream_enabled:
                 app_chunk = self.app_capture.get_chunk_mic()
-                if app_chunk is not None and len(app_chunk) == frames:
-                    out += app_chunk * self.app_stream_mic_vol
+                if app_chunk is not None:
+                    chunk_len = len(app_chunk)
+                    if chunk_len == frames:
+                        out += app_chunk * self.app_stream_mic_vol * duck
+                    elif chunk_len > frames:
+                        out += app_chunk[:frames] * self.app_stream_mic_vol * duck
+                    elif chunk_len > 0:
+                        out[:chunk_len] += app_chunk * self.app_stream_mic_vol * duck
 
             # 4. Radio Stream (mic channel)
-            if self.radio.is_playing:
-                radio_chunk = self.radio.get_chunk_mic()
-                if radio_chunk is not None and self.radio_mic_enabled:
+            if self.radio.is_playing and self.radio_mic_enabled:
+                radio_chunk = self.radio.read_frames_mic(frames)
+                if radio_chunk is not None:
                     chunk_len = len(radio_chunk)
                     if chunk_len == frames:
-                        out += radio_chunk * self.radio_mic_vol
+                        out += radio_chunk * self.radio_mic_vol * duck
                     elif chunk_len > frames:
-                        out += radio_chunk[:frames] * self.radio_mic_vol
+                        out += radio_chunk[:frames] * self.radio_mic_vol * duck
                     elif chunk_len > 0:
-                        out[:chunk_len] += radio_chunk * self.radio_mic_vol
+                        out[:chunk_len] += radio_chunk * self.radio_mic_vol * duck
 
             # 5. TTS (mic channel)
             if self.tts_active_sound:
@@ -619,8 +847,10 @@ class AudioEngine:
                     self.tts_active_sound.finished_monitor = True
                 if not self.tts_active_sound.finished_mic:
                     tts_mic = self.tts_active_sound.read_chunk_mic(frames)
-                    out += tts_mic * self.tts_mic_vol
+                    out += tts_mic * self.tts_mic_vol * duck
                 if self.tts_active_sound.is_finished:
+                    if self.tts_active_sound.play_mic and hasattr(self, "ptt") and self.ptt:
+                        self.ptt.stop_broadcast()
                     self.tts_active_sound = None
 
         # Apply master mic volume
@@ -689,6 +919,16 @@ class AudioEngine:
                 resampled[:, 1] = np.interp(target_idx, orig_idx, sound_data[:, 1])
                 sound_data = resampled
 
+        # Loudness Normalization
+        if getattr(self, "auto_normalize_enabled", True) and len(sound_data) > 0:
+            peak = float(np.max(np.abs(sound_data)))
+            if peak > 0.01:
+                rms = float(np.sqrt(np.mean(sound_data**2))) + 1e-7
+                target_rms = 0.16
+                norm_gain = min(target_rms / rms, 0.95 / peak)
+                norm_gain = float(np.clip(norm_gain, 0.2, 3.5))
+                sound_data = sound_data * norm_gain
+
         active = ActiveSound(
             sound_id=sound_id,
             buffer=sound_data,
@@ -701,6 +941,9 @@ class AudioEngine:
         with self._lock:
             self.active_sounds[sound_id] = active
             self.last_played_sound_id = sound_id
+
+        if hasattr(self, "ptt") and self.ptt:
+            self.ptt.start_broadcast()
 
         if self.on_sound_state_changed:
             self.on_sound_state_changed(sound_id, True)
@@ -724,10 +967,18 @@ class AudioEngine:
         """Loads and returns the decoded float32 stereo buffer."""
         return self.load_audio_file(filepath)
 
+    def is_sound_playing(self, sound_id: str) -> bool:
+        """Returns True if the specified sound is currently playing."""
+        with self._lock:
+            active = self.active_sounds.get(sound_id)
+            return active is not None and not active.is_finished
+
     def stop_sound(self, sound_id: str):
         with self._lock:
-            if sound_id in self.active_sounds:
-                del self.active_sounds[sound_id]
+            sound = self.active_sounds.pop(sound_id, None)
+            if sound and sound.play_mic:
+                if hasattr(self, "ptt") and self.ptt:
+                    self.ptt.stop_broadcast()
         if self.on_sound_state_changed:
             self.on_sound_state_changed(sound_id, False)
 
@@ -736,13 +987,19 @@ class AudioEngine:
         with self._lock:
             self.active_sounds.clear()
             self.tts_active_sound = None
+        if hasattr(self, "ptt") and self.ptt:
+            self.ptt.force_release()
         self.radio.stop()
         self.app_stream_enabled = False
 
     def stop_tts(self):
         """Immediately stops any ongoing TTS speech playback."""
         with self._lock:
+            prev = self.tts_active_sound
             self.tts_active_sound = None
+        if prev and prev.play_mic:
+            if hasattr(self, "ptt") and self.ptt:
+                self.ptt.stop_broadcast()
 
     def play_tts_samples(self, samples: np.ndarray, play_monitor: bool = True, play_mic: bool = True):
         """Plays TTS samples into mic and/or monitor."""
@@ -761,6 +1018,9 @@ class AudioEngine:
         with self._lock:
             self.tts_active_sound = active
 
+        if play_mic and hasattr(self, "ptt") and self.ptt:
+            self.ptt.start_broadcast()
+
     @property
     def is_audio_active(self) -> bool:
         """Returns True if any audio is actively playing or sound is passing to mic/monitor."""
@@ -776,3 +1036,43 @@ class AudioEngine:
         if getattr(self, "monitor_peak", 0.0) > 0.03 or getattr(self, "mic_peak", 0.0) > 0.03:
             return True
         return False
+
+    # ---------------- Voice Recorder ----------------
+    def start_mic_recording(self):
+        """Starts recording audio from microphone with active voice changer FX."""
+        with self._lock:
+            self._mic_recording_chunks = []
+            self.mic_recording_start_time = time.time()
+            self.mic_recording_active = True
+        # Ensure microphone stream is actively running
+        if self.mic_input_stream is None or not self.mic_input_stream.active:
+            self.start_mic_input(self.mic_input_device_id)
+
+    def stop_mic_recording(self, output_path: Path) -> bool:
+        """Stops recording and saves accumulated audio to 16-bit stereo WAV."""
+        with self._lock:
+            self.mic_recording_active = False
+            chunks = list(getattr(self, "_mic_recording_chunks", []))
+            self._mic_recording_chunks = []
+        if not chunks:
+            return False
+        try:
+            import wave
+            audio = np.vstack(chunks)
+            int_data = np.clip(audio * 32767.0, -32768, 32767).astype(np.int16)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(output_path), "wb") as wf:
+                wf.setnchannels(2)
+                wf.setsampwidth(2)
+                wf.setframerate(self.sample_rate)
+                wf.writeframes(int_data.tobytes())
+            return True
+        except Exception as e:
+            print(f"[AudioEngine] Failed to save recorded audio file {output_path}: {e}")
+            return False
+
+    def get_mic_recording_duration(self) -> float:
+        """Returns elapsed recording duration in seconds."""
+        if getattr(self, "mic_recording_active", False):
+            return max(0.0, time.time() - getattr(self, "mic_recording_start_time", time.time()))
+        return 0.0

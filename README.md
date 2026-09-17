@@ -63,19 +63,35 @@
 
 ---
 
-## 🛠️ Запуск приложения
+## 🛠️ Установка и запуск
 
-### Вариант 1 (Основной): Прямой запуск через EXE
-Просто запустите файл **`SoundFlow.exe`** двойным кликом в папке:
-```
-O:\GitHub\SoundFlow\SoundFlow.exe
-```
+### Вариант 1 (Рекомендуемый): Скачать готовый EXE
+Скачайте актуальный релиз **`SoundFlow.exe`** из раздела [**GitHub Releases**](https://github.com/MrPanica/SoundFlow/releases).  
+Установка не требуется — приложение портативное, готово к работе сразу после запуска.
 
-### Вариант 2: Запуск исходного кода через Python
+### Вариант 2: Запуск из исходного кода
 ```bash
-cd O:\GitHub\SoundFlow
+git clone https://github.com/MrPanica/SoundFlow.git
+cd SoundFlow
+pip install -r requirements.txt
 python run.py
 ```
+
+### Сборка собственного исполняемого файла
+Для сборки автономного `SoundFlow.exe` локально или публикации релиза на GitHub:
+```powershell
+# Локальная сборка SoundFlow.exe:
+.\scripts\build_and_release.ps1 -BuildOnly
+
+# Автосборка и публикация нового релиза в GitHub Releases:
+.\scripts\build_and_release.ps1 -Tag v1.0.0
+```
+Или просто создайте и отправьте тег в репозиторий:
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+GitHub Actions автоматически скомпилирует бинарный файл на виртуальной машине Windows и прикрепит его к релизу.
 
 ---
 

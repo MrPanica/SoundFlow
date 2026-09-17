@@ -25,10 +25,23 @@ class VUMeterWidget(QWidget):
         self.setFixedHeight(38)
         self.setMinimumWidth(160)
 
-    def set_levels(self, left: float, right: Optional[float] = None):
-        """Sets level in range [0.0, 1.0]."""
-        self.left_level = max(0.0, min(1.0, left))
-        self.right_level = self.left_level if right is None else max(0.0, min(1.0, right))
+    def set_levels(self, left, right: Optional[float] = None):
+        """Sets level in range [0.0, 1.0]. Accepts float or (left, right) sequence."""
+        if isinstance(left, (tuple, list)):
+            if len(left) >= 2:
+                l_val = float(left[0] or 0.0)
+                r_val = float(left[1] or 0.0)
+            elif len(left) == 1:
+                l_val = float(left[0] or 0.0)
+                r_val = l_val
+            else:
+                l_val, r_val = 0.0, 0.0
+        else:
+            l_val = float(left or 0.0)
+            r_val = l_val if right is None else float(right or 0.0)
+
+        self.left_level = max(0.0, min(1.0, l_val))
+        self.right_level = max(0.0, min(1.0, r_val))
 
         # Peak decay
         self.peak_left = max(self.left_level, self.peak_left * 0.92)

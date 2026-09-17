@@ -106,3 +106,174 @@ class DriverManager:
         driver_dir = cls.get_driver_dir()
         if driver_dir.exists():
             os.startfile(str(driver_dir))
+
+    @classmethod
+    def get_cable_capture_endpoint_id(cls) -> Optional[str]:
+        """Returns the Windows audio endpoint ID of CABLE Output capture device."""
+        try:
+            import pycaw.pycaw as pycaw
+            enumerator = pycaw.AudioUtilities.GetDeviceEnumerator()
+            collection = enumerator.EnumAudioEndpoints(pycaw.EDataFlow.eCapture.value, pycaw.AudioDeviceState.Active.value)
+            count = collection.GetCount()
+            all_devs = {d.id: d.FriendlyName for d in pycaw.AudioUtilities.GetAllDevices()}
+            for i in range(count):
+                imm_dev = collection.Item(i)
+                dev_id = imm_dev.GetId()
+                friendly = all_devs.get(dev_id, "").lower()
+                if "cable output" in friendly or ("cable" in friendly and "16ch" not in friendly):
+                    return dev_id
+        except Exception as e:
+            print(f"[DriverManager] get_cable_capture_endpoint_id error: {e}")
+        return None
+
+    @classmethod
+    def is_cable_output_default(cls) -> bool:
+        """Checks if CABLE Output is currently the Windows default recording device."""
+        try:
+            import pycaw.pycaw as pycaw
+            enumerator = pycaw.AudioUtilities.GetDeviceEnumerator()
+            cur_def = enumerator.GetDefaultAudioEndpoint(pycaw.EDataFlow.eCapture.value, pycaw.ERole.eConsole.value)
+            cable_id = cls.get_cable_capture_endpoint_id()
+            if cable_id and cur_def.GetId() == cable_id:
+                return True
+            all_devs = {d.id: d.FriendlyName for d in pycaw.AudioUtilities.GetAllDevices()}
+            def_name = all_devs.get(cur_def.GetId(), "").lower()
+            return "cable output" in def_name or ("cable" in def_name and "16ch" not in def_name)
+        except Exception as e:
+            print(f"[DriverManager] is_cable_output_default error: {e}")
+        return False
+
+    @classmethod
+    def set_default_recording_device_to_cable(cls) -> bool:
+        """Sets CABLE Output as the Windows default recording and communication device."""
+        try:
+            import pycaw.pycaw as pycaw
+            cable_id = cls.get_cable_capture_endpoint_id()
+            if cable_id:
+                pycaw.AudioUtilities.SetDefaultDevice(cable_id)
+                print(f"[DriverManager] SetDefaultDevice succeeded for {cable_id}")
+                return True
+        except Exception as e:
+            print(f"[DriverManager] set_default_recording_device_to_cable error: {e}")
+
+        # Fallback: open control panel
+        cls.open_sound_recording_settings()
+        return False
+
+    @classmethod
+    def open_sound_recording_settings(cls):
+        """Opens Windows legacy sound recording properties dialog."""
+        try:
+            subprocess.Popen(["control", "mmsys.cpl,,1"], shell=True)
+        except Exception as e:
+            print(f"[DriverManager] Failed to open sound control panel: {e}")
+
+    @classmethod
+    def get_physical_microphone_endpoint_id(cls) -> Optional[str]:
+        """Returns endpoint ID of the first non-virtual active microphone in Windows."""
+        try:
+            import pycaw.pycaw as pycaw
+            enumerator = pycaw.AudioUtilities.GetDeviceEnumerator()
+            collection = enumerator.EnumAudioEndpoints(pycaw.EDataFlow.eCapture.value, pycaw.AudioDeviceState.Active.value)
+            count = collection.GetCount()
+            all_devs = {d.id: d.FriendlyName for d in pycaw.AudioUtilities.GetAllDevices()}
+            for i in range(count):
+                imm_dev = collection.Item(i)
+                dev_id = imm_dev.GetId()
+                friendly = all_devs.get(dev_id, "").lower()
+                if "cable" not in friendly and "virtual" not in friendly and "voicemeeter" not in friendly:
+                    return dev_id
+        except Exception as e:
+            print(f"[DriverManager] get_physical_microphone_endpoint_id error: {e}")
+        return None
+
+    @classmethod
+    def restore_physical_recording_device(cls) -> bool:
+        """Restores physical microphone as the Windows default recording device."""
+        try:
+            import pycaw.pycaw as pycaw
+            phys_id = cls.get_physical_microphone_endpoint_id()
+            if phys_id:
+                pycaw.AudioUtilities.SetDefaultDevice(phys_id)
+                print(f"[DriverManager] Restored physical microphone as default: {phys_id}")
+                return True
+        except Exception as e:
+            print(f"[DriverManager] restore_physical_recording_device error: {e}")
+        return False
+
+    @classmethod
+    def start_mic_repeater(cls, mic_id: Optional[int] = None, cable_id: Optional[int] = None) -> bool:
+        """Starts headless standby mic repeater in the background."""
+        cls.stop_mic_repeater()
+        try:
+            if getattr(sys, "frozen", False):
+                exe = sys.executable
+                cmd = [exe, "--repeater"]
+            else:
+                python_exe = sys.executable
+                if "pythonw.exe" in python_exe.lower():
+                    pyw = python_exe
+                else:
+                    pyw = str(Path(python_exe).parent / "pythonw.exe")
+                    if not os.path.exists(pyw):
+                        pyw = python_exe
+                cmd = [pyw, "-m", "core.mic_repeater"]
+
+            if mic_id is not None:
+                cmd.extend(["--mic", str(mic_id)])
+            if cable_id is not None:
+                cmd.extend(["--cable", str(cable_id)])
+
+            DETACHED_PROCESS = 0x00000008
+            CREATE_NO_WINDOW = 0x08000000
+            subprocess.Popen(
+                cmd,
+                creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW,
+                close_fds=True,
+                cwd=str(Path(__file__).resolve().parent.parent)
+            )
+            print(f"[DriverManager] Standby mic repeater started.")
+            return True
+        except Exception as e:
+            print(f"[DriverManager] start_mic_repeater error: {e}")
+            return False
+
+    @classmethod
+    def stop_mic_repeater(cls):
+        """Stops any running standby mic repeater."""
+        from core.mic_repeater import PID_FILE
+        try:
+            if PID_FILE.exists():
+                pid_str = PID_FILE.read_text(encoding="utf-8").strip()
+                if pid_str.isdigit():
+                    pid = int(pid_str)
+                    import psutil
+                    if psutil.pid_exists(pid):
+                        p = psutil.Process(pid)
+                        p.terminate()
+                        try:
+                            p.wait(timeout=1.0)
+                        except Exception:
+                            p.kill()
+                PID_FILE.unlink(missing_ok=True)
+        except Exception as e:
+            print(f"[DriverManager] stop_mic_repeater note: {e}")
+            try:
+                PID_FILE.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    @classmethod
+    def is_mic_repeater_running(cls) -> bool:
+        """Checks if the standby mic repeater is currently running."""
+        from core.mic_repeater import PID_FILE
+        try:
+            if PID_FILE.exists():
+                pid_str = PID_FILE.read_text(encoding="utf-8").strip()
+                if pid_str.isdigit():
+                    import psutil
+                    return psutil.pid_exists(int(pid_str))
+        except Exception:
+            pass
+        return False
+

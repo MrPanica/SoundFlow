@@ -1,0 +1,83 @@
+name: Build and Release SoundFlow
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+      release_name:
+        description: 'Release Title'
+        required: false
+        default: 'SoundFlow Studio Release'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build Executable with PyInstaller
+        run: |
+          python -m PyInstaller SoundFlow.spec --noconfirm --log-level WARN
+
+      - name: Verify Build Artifact
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist/SoundFlow.exe")) {
+            Write-Error "dist/SoundFlow.exe was not created!"
+            exit 1
+          }
+          $item = Get-Item "dist/SoundFlow.exe"
+          Write-Host "Binary built successfully: $($item.FullName) ($([math]::Round($item.Length / 1MB, 2)) MB)"
+
+      - name: Determine Version Tag
+        id: vars
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ github.event.inputs.tag_name }}"
+            $title = "${{ github.event.inputs.release_name }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+            $title = "SoundFlow Studio $tag"
+          }
+          Write-Host "Tag: $tag"
+          Write-Host "Title: $title"
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "title=$title" >> $env:GITHUB_OUTPUT
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: ${{ steps.vars.outputs.title }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/SoundFlow.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

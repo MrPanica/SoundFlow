@@ -6,6 +6,9 @@ datas = [('assets', 'assets')]
 datas += collect_data_files('imageio_ffmpeg')
 
 hiddenimports = [
+    'core.i18n',
+    'core.mic_repeater',
+    'core.ptt_controller',
     'imageio_ffmpeg',
     'yt_dlp',
     'edge_tts',
@@ -13,7 +16,10 @@ hiddenimports = [
     'qframelesswindow',
     'miniaudio',
     'sounddevice',
-    'numpy'
+    'numpy',
+    'pycaw',
+    'comtypes',
+    'psutil'
 ]
 
 a = Analysis(
@@ -25,7 +31,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['scipy', 'pedalboard', 'tkinter', 'matplotlib', 'pydoc', 'unittest'],
     noarchive=False,
     optimize=0,
 )
@@ -34,13 +40,14 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='SoundFlow',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -48,13 +55,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['assets\\app_icon.ico'],
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='SoundFlow',
 )

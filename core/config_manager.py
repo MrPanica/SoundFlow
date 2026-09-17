@@ -33,19 +33,32 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "radio_mic_enabled": True,
     "tts_monitor_vol": 0.8,
     "tts_mic_vol": 1.0,
-    "mic_passthrough_enabled": False,
+    "mic_passthrough_enabled": True,
     "mic_gate_threshold": -40.0,
     "mic_voice_fx": "normal",
     "instant_replay_duration": 30,  # seconds
     "minimize_to_tray": True,
+    "notify_on_minimize": True,
+    "hide_cable_default_banner": False,
     "close_to_tray": True,
     "buffer_size": 1024,
+    "exit_mic_behavior": "restore_default",
+    "recordings_dir": str(APP_DIR / "recordings"),
+    "ptt_enabled": False,
+    "ptt_key": "v",
+    "ptt_delay_ms": 150,
+    "ducking_enabled": True,
+    "ducking_amount": 0.25,
+    "ducking_threshold_db": -35.0,
+    "auto_normalize": True,
+    "random_sound_hotkey": "",
     "hotkeys": {
         "stop_all": "esc",
         "app_stream_toggle": "ctrl+f9",
         "radio_toggle": "ctrl+f10",
         "instant_replay_clip": "ctrl+f11",
-        "mic_mute_toggle": "ctrl+f12"
+        "mic_mute_toggle": "ctrl+f12",
+        "random_sound": ""
     }
 }
 
@@ -194,7 +207,7 @@ class ConfigManager:
     def get_categories(self) -> List[Dict[str, Any]]:
         return list(self.categories)
 
-    def add_category(self, name: str) -> Optional[Dict[str, Any]]:
+    def add_category(self, name: str, position: Optional[int] = None) -> Optional[Dict[str, Any]]:
         name_clean = name.strip()
         if not name_clean:
             return None
@@ -210,9 +223,26 @@ class ConfigManager:
             cat_id = f"{base_id}_{counter}"
             counter += 1
         new_cat = {"id": cat_id, "name": name_clean, "system": False}
-        self.categories.append(new_cat)
+        if position is not None and 0 <= position <= len(self.categories):
+            self.categories.insert(position, new_cat)
+        else:
+            self.categories.append(new_cat)
         self.save_categories()
         return new_cat
+
+    def batch_add_sounds(self, sound_items: List[Dict[str, Any]]) -> int:
+        """Adds multiple sound items and saves config in a single disk write."""
+        added = 0
+        for s in sound_items:
+            existing = next((item for item in self.sounds if item.get("path") == s.get("path")), None)
+            if existing:
+                if s.get("category"):
+                    existing["category"] = s.get("category")
+            else:
+                self.sounds.append(s)
+                added += 1
+        self.save_sounds()
+        return added
 
     def rename_category(self, cat_id: str, new_name: str) -> bool:
         new_name_clean = new_name.strip()
@@ -305,6 +335,27 @@ class ConfigManager:
             self.save_tts_presets()
             return True
         return False
+
+    def update_tts_preset(self, preset_id: str, updates: Dict[str, Any]) -> bool:
+        for p in self.tts_presets:
+            if p.get("id") == preset_id:
+                p.update(updates)
+                self.save_tts_presets()
+                return True
+        return False
+
+    def get_recordings_dir(self) -> Path:
+        dir_str = self.get("recordings_dir")
+        if dir_str:
+            p = Path(dir_str)
+        else:
+            p = Path(__file__).parent.parent / "recordings"
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            p = Path(__file__).parent.parent / "recordings"
+            p.mkdir(parents=True, exist_ok=True)
+        return p
 
     def save_voice_presets(self):
         self._save_json(VOICE_PRESETS_FILE, self.voice_presets)

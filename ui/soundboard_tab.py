@@ -18,24 +18,28 @@ from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
 from .widgets import SoundCardWidget
 
 
+from core.i18n import tr
+
+
 class HotkeyCaptureDialog(QDialog):
     """Dialog that captures a global keyboard key combination."""
 
     def __init__(self, current_hotkey: str = "", parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Назначение горячей клавиши")
+        self.setWindowTitle(tr("soundboard_menu_hotkey", "Назначение горячей клавиши"))
         self.setFixedSize(360, 200)
         self.captured_key = current_hotkey
 
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
 
-        lbl = QLabel("Нажмите нужную клавишу или сочетание на клавиатуре:")
+        lbl = QLabel(tr("soundboard_dlg_press_hotkey", "Нажмите нужную клавишу или сочетание на клавиатуре:"))
         lbl.setWordWrap(True)
         lbl.setStyleSheet("color: #94a3b8; font-size: 13px;")
         layout.addWidget(lbl)
 
-        self.key_box = QLabel(self.captured_key.upper() if self.captured_key else "ОЖИДАНИЕ НАЖАТИЯ...")
+        wait_text = "..." if not self.captured_key else self.captured_key.upper()
+        self.key_box = QLabel(wait_text)
         self.key_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.key_box.setStyleSheet("""
             background: #1e293b;
@@ -49,17 +53,17 @@ class HotkeyCaptureDialog(QDialog):
         layout.addWidget(self.key_box)
 
         btn_layout = QHBoxLayout()
-        self.btn_clear = QPushButton("Сбросить")
+        self.btn_clear = QPushButton(tr("voice_fx_btn_reset", "Сбросить"))
         self.btn_clear.clicked.connect(self._clear_key)
         btn_layout.addWidget(self.btn_clear)
 
         btn_layout.addStretch()
 
-        self.btn_cancel = QPushButton("Отмена")
+        self.btn_cancel = QPushButton(tr("common_cancel", "Отмена"))
         self.btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(self.btn_cancel)
 
-        self.btn_save = QPushButton("Сохранить")
+        self.btn_save = QPushButton(tr("common_save", "Сохранить"))
         self.btn_save.setObjectName("AccentButton")
         self.btn_save.clicked.connect(self.accept)
         btn_layout.addWidget(self.btn_save)
@@ -100,7 +104,8 @@ class SoundEditDialog(QDialog):
 
     def __init__(self, sound_data: Dict[str, Any], categories: Optional[List[Dict[str, Any]]] = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Настройка: {sound_data.get('name')}")
+        title_tpl = tr("soundboard_dlg_edit_title", "Параметры звука: {name}")
+        self.setWindowTitle(title_tpl.format(name=sound_data.get('name', 'Sound')))
         self.setFixedSize(400, 360)
         self.sound_data = sound_data.copy()
 
@@ -108,12 +113,12 @@ class SoundEditDialog(QDialog):
         layout.setSpacing(12)
 
         # Name
-        layout.addWidget(QLabel("Название звука:"))
+        layout.addWidget(QLabel(tr("soundboard_dlg_edit_name", "Название звука:")))
         self.edit_name = QLineEdit(self.sound_data.get("name", ""))
         layout.addWidget(self.edit_name)
 
         # Category
-        layout.addWidget(QLabel("Категория:"))
+        layout.addWidget(QLabel(tr("soundboard_menu_move_cat", "Категория:")))
         self.combo_category = QComboBox()
         self.combo_category.setEditable(True)
 
@@ -140,32 +145,44 @@ class SoundEditDialog(QDialog):
 
         # Volume slider
         vol_val = int(self.sound_data.get("volume", 1.0) * 100)
-        self.lbl_vol = QLabel(f"Громкость: {vol_val}%")
+        vol_tpl = tr("soundboard_dlg_edit_vol", "Громкость звука: {vol}%")
+        self.lbl_vol = QLabel(vol_tpl.format(vol=vol_val))
         layout.addWidget(self.lbl_vol)
         self.slider_vol = QSlider(Qt.Orientation.Horizontal)
         self.slider_vol.setRange(0, 200)
         self.slider_vol.setValue(vol_val)
-        self.slider_vol.valueChanged.connect(lambda v: self.lbl_vol.setText(f"Громкость: {v}%"))
+        self.slider_vol.valueChanged.connect(lambda v: self.lbl_vol.setText(vol_tpl.format(vol=v)))
         layout.addWidget(self.slider_vol)
 
         # Speed slider
         spd_val = int(self.sound_data.get("speed", 1.0) * 100)
-        self.lbl_spd = QLabel(f"Скорость воспроизведения: {spd_val / 100:.1f}x")
+        self.lbl_spd = QLabel(f"Speed: {spd_val / 100:.1f}x")
         layout.addWidget(self.lbl_spd)
         self.slider_spd = QSlider(Qt.Orientation.Horizontal)
         self.slider_spd.setRange(50, 200)
         self.slider_spd.setValue(spd_val)
-        self.slider_spd.valueChanged.connect(lambda v: self.lbl_spd.setText(f"Скорость воспроизведения: {v / 100:.1f}x"))
+        self.slider_spd.valueChanged.connect(lambda v: self.lbl_spd.setText(f"Speed: {v / 100:.1f}x"))
         layout.addWidget(self.slider_spd)
+
+        # Playback Mode
+        layout.addWidget(QLabel(tr("soundboard_dlg_edit_mode", "Режим воспроизведения:")))
+        self.combo_mode = QComboBox()
+        self.combo_mode.addItem(tr("soundboard_mode_normal", "Обычный (клик для старта / повторный для стопа)"), "normal")
+        self.combo_mode.addItem(tr("soundboard_mode_hold", "Удерживать (играть, пока зажат хоткей)"), "hold")
+        curr_mode = self.sound_data.get("play_mode", "normal")
+        idx_mode = self.combo_mode.findData(curr_mode)
+        if idx_mode >= 0:
+            self.combo_mode.setCurrentIndex(idx_mode)
+        layout.addWidget(self.combo_mode)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        self.btn_cancel = QPushButton("Отмена")
+        self.btn_cancel = QPushButton(tr("common_cancel", "Отмена"))
         self.btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(self.btn_cancel)
 
-        self.btn_save = QPushButton("Сохранить")
+        self.btn_save = QPushButton(tr("common_save", "Сохранить"))
         self.btn_save.setObjectName("AccentButton")
         self.btn_save.clicked.connect(self._save_changes)
         btn_layout.addWidget(self.btn_save)
@@ -182,6 +199,7 @@ class SoundEditDialog(QDialog):
             self.sound_data["category"] = raw_text.split(" (")[0].strip() or "SFX"
         self.sound_data["volume"] = self.slider_vol.value() / 100.0
         self.sound_data["speed"] = self.slider_spd.value() / 100.0
+        self.sound_data["play_mode"] = self.combo_mode.currentData() or "normal"
         self.accept()
 
 

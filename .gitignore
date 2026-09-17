@@ -7,6 +7,13 @@ __pycache__/
 build/
 dist/
 *.spec.bak
+*.exe
+SoundFlow.exe
+
+# Temporary test audio and scratch files
+scratch*
+test_*.wav
+run_err.log
 
 # PyInstaller internal runtime directory (exclude large binaries from git history)
 _internal/

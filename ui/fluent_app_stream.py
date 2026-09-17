@@ -5,15 +5,18 @@ Enables real-time pass-through audio capture from running processes into microph
 
 import os
 import psutil
-from PyQt6.QtCore import Qt, pyqtSignal, QFileInfo
+from typing import Optional
+from PyQt6.QtCore import Qt, pyqtSignal, QFileInfo, QTimer
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QFileIconProvider
 from qfluentwidgets import (
-    CardWidget, HeaderCardWidget, PrimaryPushButton, PushButton,
+    CardWidget, HeaderCardWidget, PrimaryPushButton, PushButton, TransparentPushButton,
     ComboBox, Slider, SearchLineEdit, TitleLabel, SubtitleLabel, BodyLabel,
     CaptionLabel, FluentIcon, InfoBar, InfoBarPosition
 )
 
 from core.app_capture import AppCaptureManager
+from .widgets import VUMeterWidget
+from core.i18n import tr
 
 
 class FluentAppStreamInterface(QWidget):
@@ -33,7 +36,12 @@ class FluentAppStreamInterface(QWidget):
         self._icon_cache = {}
 
         self._build_ui()
+        self._load_target_devices()
         self.refresh_process_list()
+
+        self.meter_timer = QTimer(self)
+        self.meter_timer.timeout.connect(self._update_app_meter)
+        self.meter_timer.start(33)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -43,8 +51,11 @@ class FluentAppStreamInterface(QWidget):
         # Header Title
         title_layout = QVBoxLayout()
         title_layout.setSpacing(4)
-        lbl_title = TitleLabel("Стрим звука из приложений", self)
-        lbl_sub = CaptionLabel("Трансляция звука из любого процесса Windows (браузер, Spotify, плеер, игра) прямо в микрофон", self)
+        lbl_title = TitleLabel(tr("app_stream_title", "Стрим звука из приложений"), self)
+        lbl_sub = CaptionLabel(
+            tr("app_stream_subtitle", "Трансляция звука из любого процесса Windows (браузер, Spotify, плеер, игра) прямо в микрофон"),
+            self
+        )
         lbl_sub.setStyleSheet("color: rgba(255, 255, 255, 0.6);")
         title_layout.addWidget(lbl_title)
         title_layout.addWidget(lbl_sub)
@@ -56,7 +67,7 @@ class FluentAppStreamInterface(QWidget):
         c_layout.setContentsMargins(20, 20, 20, 20)
         c_layout.setSpacing(16)
 
-        c_title = SubtitleLabel("Захват и трансляция", card_capture)
+        c_title = SubtitleLabel(tr("app_stream_card_title", "Захват и трансляция"), card_capture)
         c_layout.addWidget(c_title)
 
         # Row 1: Search Box & Refresh Button
@@ -64,14 +75,14 @@ class FluentAppStreamInterface(QWidget):
         search_row.setSpacing(10)
 
         self.search_app = SearchLineEdit(card_capture)
-        self.search_app.setPlaceholderText("Поиск приложения по имени...")
+        self.search_app.setPlaceholderText(tr("app_stream_search_placeholder", "Поиск приложения по имени..."))
         self.search_app.setFixedHeight(34)
         self.search_app.textChanged.connect(self._filter_apps_by_search)
         search_row.addWidget(self.search_app, stretch=1)
 
-        self.btn_refresh = PushButton(FluentIcon.SYNC, "Обновить процессы", card_capture)
+        self.btn_refresh = PushButton(FluentIcon.SYNC, tr("app_stream_btn_refresh", "Обновить процессы"), card_capture)
         self.btn_refresh.setFixedHeight(34)
-        self.btn_refresh.setToolTip("Обновить список активных аудиосессий Windows")
+        self.btn_refresh.setToolTip(tr("app_stream_refresh_tooltip", "Обновить список активных аудиосессий Windows"))
         self.btn_refresh.clicked.connect(self.refresh_process_list)
         search_row.addWidget(self.btn_refresh)
         c_layout.addLayout(search_row)
@@ -81,8 +92,40 @@ class FluentAppStreamInterface(QWidget):
         self.combo_apps.setFixedHeight(36)
         c_layout.addWidget(self.combo_apps)
 
+        # Row 3: Target Microphone Selection (where system sound is streamed)
+        mic_row = QVBoxLayout()
+        mic_row.setSpacing(6)
+        lbl_target_mic = CaptionLabel(
+            tr("app_stream_target_mic_label", "Куда транслировать системный звук (микрофон / виртуальный кабель):"),
+            card_capture
+        )
+        lbl_target_mic.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-weight: 600;")
+        self.combo_target_mic = ComboBox(card_capture)
+        self.combo_target_mic.setFixedHeight(34)
+        self.combo_target_mic.currentIndexChanged.connect(self._on_target_mic_changed)
+        mic_row.addWidget(lbl_target_mic)
+        mic_row.addWidget(self.combo_target_mic)
+
+        # Guidance banner and 1-click button for games / Discord
+        guide_row = QHBoxLayout()
+        guide_row.setSpacing(8)
+        self.lbl_mic_guide = CaptionLabel(tr("radio_guide_label", "🎮 В игре / Discord выберите микрофон: CABLE Output (VB-Audio)"), card_capture)
+        self.lbl_mic_guide.setStyleSheet("color: #38bdf8; font-weight: 500;")
+        self.btn_set_default_mic = TransparentPushButton(FluentIcon.SETTING, tr("radio_guide_btn", "Сделать микрофоном по умолчанию"), card_capture)
+        self.btn_set_default_mic.setFixedHeight(28)
+        self.btn_set_default_mic.clicked.connect(self._set_default_mic)
+        guide_row.addWidget(self.lbl_mic_guide, stretch=1)
+        guide_row.addWidget(self.btn_set_default_mic)
+        mic_row.addLayout(guide_row)
+
+        c_layout.addLayout(mic_row)
+
+        # Dynamic Stereo VU Meter
+        self.vu_app = VUMeterWidget(label=tr("app_stream_vu_label", "УРОВЕНЬ ЗВУКА ПРИЛОЖЕНИЯ"), parent=card_capture)
+        c_layout.addWidget(self.vu_app)
+
         # Big Main Stream Button (use setFont to preserve Fluent QSS icon and layout)
-        self.btn_stream = PrimaryPushButton(FluentIcon.PLAY, "Начать трансляцию в микрофон", card_capture)
+        self.btn_stream = PrimaryPushButton(FluentIcon.PLAY, tr("app_stream_btn_start", "Начать трансляцию в микрофон"), card_capture)
         self.btn_stream.setFixedHeight(44)
         btn_font = self.btn_stream.font()
         btn_font.setPointSize(11)
@@ -93,7 +136,7 @@ class FluentAppStreamInterface(QWidget):
 
         # Hotkey badge
         hotkey_str = self.cfg.get("hotkeys", {}).get("app_stream_toggle", "ctrl+f9").upper()
-        self.lbl_hotkey = CaptionLabel(f"Глобальная горячая клавиша:  [ {hotkey_str} ]  — работает в играх", card_capture)
+        self.lbl_hotkey = CaptionLabel(tr("app_stream_hotkey_label", hotkey=hotkey_str), card_capture)
         self.lbl_hotkey.setStyleSheet("color: rgba(255, 255, 255, 0.6);")
         c_layout.addWidget(self.lbl_hotkey)
 
@@ -105,13 +148,13 @@ class FluentAppStreamInterface(QWidget):
         v_layout.setContentsMargins(20, 20, 20, 20)
         v_layout.setSpacing(16)
 
-        v_title = SubtitleLabel("Уровни громкости", card_vol)
+        v_title = SubtitleLabel(tr("app_stream_vol_title", "Громкость трансляции приложения"), card_vol)
         v_layout.addWidget(v_title)
 
         # Monitor Volume (Local / For Self)
         mon_row = QHBoxLayout()
-        self.lbl_mon = BodyLabel("Слышать самому: 80%", card_vol)
-        self.lbl_mon.setFixedWidth(220)
+        self.lbl_mon = BodyLabel(f"{tr('app_stream_vol_monitor', 'Слышать самому:')} 80%", card_vol)
+        self.lbl_mon.setFixedWidth(240)
         self.slider_mon = Slider(Qt.Orientation.Horizontal, card_vol)
         self.slider_mon.setRange(0, 150)
         self.slider_mon.setValue(80)
@@ -121,16 +164,16 @@ class FluentAppStreamInterface(QWidget):
         v_layout.addLayout(mon_row)
 
         # Mic Target Volume (Discord / Teammates)
-        mic_row = QHBoxLayout()
-        self.lbl_mic = BodyLabel("В микрофон (тиммейтам): 100%", card_vol)
-        self.lbl_mic.setFixedWidth(200)
+        mic_vol_row = QHBoxLayout()
+        self.lbl_mic = BodyLabel(f"{tr('app_stream_vol_mic', 'В микрофон (тиммейтам):')} 100%", card_vol)
+        self.lbl_mic.setFixedWidth(240)
         self.slider_mic = Slider(Qt.Orientation.Horizontal, card_vol)
         self.slider_mic.setRange(0, 150)
         self.slider_mic.setValue(100)
         self.slider_mic.valueChanged.connect(self._on_mic_vol)
-        mic_row.addWidget(self.lbl_mic)
-        mic_row.addWidget(self.slider_mic)
-        v_layout.addLayout(mic_row)
+        mic_vol_row.addWidget(self.lbl_mic)
+        mic_vol_row.addWidget(self.slider_mic)
+        v_layout.addLayout(mic_vol_row)
 
         layout.addWidget(card_vol)
         layout.addStretch()
@@ -195,10 +238,11 @@ class FluentAppStreamInterface(QWidget):
         self.combo_apps.clear()
 
         # 1. System Mix
+        sys_mix_name = tr("app_stream_all_system_mix", "Все системные звуки (микс ПК)")
         self.combo_apps.addItem(
-            "Все системные звуки (микс ПК)",
+            sys_mix_name,
             icon=FluentIcon.SPEAKERS,
-            userData={"pid": None, "name": "Все системные звуки (микс ПК)", "exe": ""}
+            userData={"pid": None, "name": sys_mix_name, "exe": ""}
         )
 
         q = query.lower()
@@ -258,7 +302,7 @@ class FluentAppStreamInterface(QWidget):
             self.engine.app_capture.target_app_name = data.get("name")
 
         self.engine.app_capture.start_capture()
-        self.btn_stream.setText("Остановить трансляцию в микрофон (В эфире)")
+        self.btn_stream.setText(tr("app_stream_btn_stop", "Остановить трансляцию в микрофон (В эфире)"))
         self.btn_stream.setIcon(FluentIcon.PAUSE)
         self.stream_toggled.emit(True)
 
@@ -267,14 +311,72 @@ class FluentAppStreamInterface(QWidget):
         self.engine.app_stream_enabled = False
         self.engine.app_capture.target_pid = None
         self.engine.app_capture.stop_capture()
-        self.btn_stream.setText("Начать трансляцию в микрофон")
+        if hasattr(self, "vu_app"):
+            self.vu_app.reset()
+        self.btn_stream.setText(tr("app_stream_btn_start", "Начать трансляцию в микрофон"))
         self.btn_stream.setIcon(FluentIcon.PLAY)
         self.stream_toggled.emit(False)
 
+    def _update_app_meter(self):
+        if hasattr(self, "vu_app"):
+            peak = getattr(self.engine, "app_stream_peak", 0.0)
+            self.vu_app.set_levels(peak)
+
     def _on_mon_vol(self, val: int):
-        self.lbl_mon.setText(f"Слышать самому: {val}%")
+        self.lbl_mon.setText(f"{tr('app_stream_vol_monitor', 'Слышать самому:')} {val}%")
         self.engine.app_stream_monitor_vol = val / 100.0
 
     def _on_mic_vol(self, val: int):
-        self.lbl_mic.setText(f"В микрофон (тиммейтам): {val}%")
+        self.lbl_mic.setText(f"{tr('app_stream_vol_mic', 'В микрофон (тиммейтам):')} {val}%")
         self.engine.app_stream_mic_vol = val / 100.0
+
+    def _load_target_devices(self):
+        """Loads available audio output devices for target microphone into combo box."""
+        saved_target = self.cfg.get("mic_target_device_id")
+        self.engine.populate_target_mic_combobox(self.combo_target_mic, saved_target)
+
+    def _set_default_mic(self):
+        from core.driver_manager import DriverManager
+        ok = DriverManager.set_default_recording_device_to_cable()
+        if ok:
+            InfoBar.success(
+                title=tr("mic_default_success_title"),
+                content=tr("mic_default_success_msg"),
+                position=InfoBarPosition.TOP,
+                parent=self,
+                duration=4000
+            )
+        else:
+            InfoBar.info(
+                title=tr("mic_default_manual_title"),
+                content=tr("mic_default_manual_msg"),
+                position=InfoBarPosition.TOP,
+                parent=self,
+                duration=4500
+            )
+
+    def _on_target_mic_changed(self, index: int):
+        dev_id = self.combo_target_mic.itemData(index)
+        # Safely decouple via singleShot so ComboBoxMenu popup can close cleanly
+        QTimer.singleShot(20, lambda: self._apply_target_mic(dev_id))
+
+    def _apply_target_mic(self, dev_id: Optional[int]):
+        main_win = self.window()
+        if hasattr(main_win, "set_global_target_microphone"):
+            main_win.set_global_target_microphone(dev_id, source_tab=self)
+        else:
+            self.cfg.set("mic_target_device_id", dev_id)
+            self.engine.set_mic_target_device(dev_id)
+
+    def sync_target_mic(self, dev_id: Optional[int]):
+        """Synchronizes combo box selection from external changes."""
+        self.combo_target_mic.blockSignals(True)
+        found = False
+        for i in range(self.combo_target_mic.count()):
+            if self.combo_target_mic.itemData(i) == dev_id:
+                self.combo_target_mic.setCurrentIndex(i)
+                found = True
+                break
+        if not found and dev_id is None:
+            self.combo_target_mic.setCurrentIndex(0)
+        self.combo_target_mic.blockSignals(False)

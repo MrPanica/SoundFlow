@@ -39,11 +39,11 @@ def test_stream_url_normalization():
     assert clean_tracking == "https://www.youtube.com/watch?v=dQw4w9WgXcQ", f"Tracking cleanup failed: {clean_tracking}"
     print("[PASS] Tracking parameters stripped")
 
-    # 3. Auto-mix playlist params removal
+    # 3. Playlist / mix parameters preservation
     mix_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ&start_radio=1"
     clean_mix = clean_and_normalize_stream_url(mix_url)
-    assert clean_mix == "https://www.youtube.com/watch?v=dQw4w9WgXcQ", f"Mix cleanup failed: {clean_mix}"
-    print("[PASS] Auto-mix & radio playlist parameters stripped")
+    assert "list=RDdQw4w9WgXcQ" in clean_mix, f"Playlist param missing: {clean_mix}"
+    print("[PASS] Playlist & mix parameters preserved for continuous playback")
 
 
 def test_radio_streamer_and_backpressure():

@@ -9,7 +9,7 @@ import wave
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGridLayout,
     QMessageBox, QDialog, QScrollArea
@@ -23,25 +23,33 @@ from qfluentwidgets import (
 
 from core.tts_engine import TTSEngine, AVAILABLE_VOICES
 from core.voice_fx import VoiceFXProcessor, BUILTIN_PRESETS
+from core.i18n import tr
 
-TTS_FX_OPTIONS = [
-    ("normal", "Обычный (без эффекта)"),
-    ("robot", "Кибер-Робот"),
-    ("helium", "Бурундук (Helium)"),
-    ("monster", "Демон (Monster)"),
-    ("megaphone", "Мегафон / Рация"),
-    ("echo", "Пространственное эхо"),
-    ("radio", "Старое радио"),
-    ("alien", "Пришелец")
-]
+def get_tts_fx_options():
+    return [
+        ("normal", tr("preset_normal_name", "Обычный (без эффекта)")),
+        ("robot", tr("preset_robot_name", "Кибер-Робот")),
+        ("helium", tr("preset_helium_name", "Бурундук (Helium)")),
+        ("child", tr("preset_child_name", "Ребёнок")),
+        ("female", tr("preset_female_name", "Женский голос")),
+        ("male", tr("preset_male_name", "Мужской глубокий")),
+        ("monster", tr("preset_monster_name", "Демон (Monster)")),
+        ("megaphone", tr("preset_megaphone_name", "Мегафон / Рация")),
+        ("echo", tr("preset_echo_name", "Пространственное эхо")),
+        ("radio", tr("preset_radio_name", "Старое радио")),
+        ("alien", tr("preset_alien_name", "Пришелец"))
+    ]
 
 
-class AddTTSPresetDialog(QDialog):
-    """Dialog to create a new quick phrase preset with voice and voice-changer effect."""
+class TTSPresetDialog(QDialog):
+    """Dialog to create or edit a quick phrase preset with voice and voice-changer effect."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, preset: Optional[Dict[str, Any]] = None):
         super().__init__(parent)
-        self.setWindowTitle("Новый пресет быстрой фразы")
+        self.preset = preset
+        is_edit = preset is not None
+        title_text = tr("tts_dlg_edit_title", "Редактировать пресет фразы") if is_edit else tr("tts_dlg_new_phrase_title", "Добавить пресет фразы")
+        self.setWindowTitle(title_text)
         self.setFixedSize(460, 350)
         self.setStyleSheet("background-color: #202020; color: #ffffff;")
 
@@ -49,50 +57,61 @@ class AddTTSPresetDialog(QDialog):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(14)
 
-        title = SubtitleLabel("Добавить пресет фразы", self)
+        title = SubtitleLabel(title_text, self)
         layout.addWidget(title)
 
         # Text input
-        layout.addWidget(BodyLabel("Текст фразы:", self))
+        layout.addWidget(BodyLabel(tr("tts_input_placeholder", "Текст фразы:"), self))
         self.edit_text = LineEdit(self)
-        self.edit_text.setPlaceholderText("Например: GG WP! Хорошая игра!")
+        self.edit_text.setPlaceholderText(tr("tts_phrase_placeholder", "Например: GG WP! Отличная игра!"))
         self.edit_text.setFixedHeight(34)
+        if is_edit:
+            self.edit_text.setText(preset.get("text", ""))
         layout.addWidget(self.edit_text)
 
         # Voice selection
-        layout.addWidget(BodyLabel("Голос озвучки:", self))
+        layout.addWidget(BodyLabel(tr("tts_voice_label", "Голос озвучки:"), self))
         self.combo_voice = ComboBox(self)
         self.combo_voice.setFixedHeight(32)
         for v in AVAILABLE_VOICES:
-            self.combo_voice.addItem(v["name"], userData=v["id"])
+            self.combo_voice.addItem(tr(f"voice_{v['id']}", v["name"]), userData=v["id"])
+        if is_edit:
+            idx = self.combo_voice.findData(preset.get("voice", "ru-RU-DmitryNeural"))
+            if idx >= 0:
+                self.combo_voice.setCurrentIndex(idx)
         layout.addWidget(self.combo_voice)
 
         # FX selection
-        layout.addWidget(BodyLabel("Голосовой эффект (Voice Changer):", self))
+        layout.addWidget(BodyLabel(tr("voice_fx_title", "Голосовой эффект (Voice Changer):"), self))
         self.combo_fx = ComboBox(self)
         self.combo_fx.setFixedHeight(32)
-        for fx_id, fx_label in TTS_FX_OPTIONS:
+        for fx_id, fx_label in get_tts_fx_options():
             self.combo_fx.addItem(fx_label, userData=fx_id)
+        if is_edit:
+            idx_fx = self.combo_fx.findData(preset.get("fx", "normal"))
+            if idx_fx >= 0:
+                self.combo_fx.setCurrentIndex(idx_fx)
         layout.addWidget(self.combo_fx)
 
         # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        self.btn_cancel = PushButton("Отмена", self)
+        self.btn_cancel = PushButton(tr("common_cancel", "Отмена"), self)
         self.btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(self.btn_cancel)
 
-        self.btn_add = PrimaryPushButton(FluentIcon.ADD, "Добавить", self)
-        self.btn_add.clicked.connect(self._validate_and_accept)
-        btn_layout.addWidget(self.btn_add)
+        save_label = tr("common_save", "Сохранить") if is_edit else tr("common_create", "Добавить")
+        self.btn_save = PrimaryPushButton(FluentIcon.SAVE if is_edit else FluentIcon.ADD, save_label, self)
+        self.btn_save.clicked.connect(self._validate_and_accept)
+        btn_layout.addWidget(self.btn_save)
 
         layout.addLayout(btn_layout)
 
     def _validate_and_accept(self):
         text = self.edit_text.text().strip()
         if not text:
-            QMessageBox.warning(self, "Внимание", "Пожалуйста, введите текст фразы.")
+            QMessageBox.warning(self, tr("tts_warn_empty_title", "Внимание"), tr("tts_error_empty", "Пожалуйста, введите текст фразы."))
             return
         self.accept()
 
@@ -102,6 +121,10 @@ class AddTTSPresetDialog(QDialog):
             "voice": self.combo_voice.currentData() or "ru-RU-DmitryNeural",
             "fx": self.combo_fx.currentData() or "normal"
         }
+
+
+AddTTSPresetDialog = TTSPresetDialog
+EditTTSPresetDialog = TTSPresetDialog
 
 
 class FluentTTSInterface(QWidget):
@@ -130,6 +153,7 @@ class FluentTTSInterface(QWidget):
         self.sig_tts_error.connect(self._on_error_main_thread)
 
         self._build_ui()
+        self._load_target_devices()
         self._refresh_quick_phrases()
 
     def _build_ui(self):
@@ -140,9 +164,9 @@ class FluentTTSInterface(QWidget):
         # Header Title
         title_layout = QVBoxLayout()
         title_layout.setSpacing(4)
-        lbl_title = TitleLabel("Синтез речи (TTS) и Быстрые фразы", self)
+        lbl_title = TitleLabel(tr("tts_title", "Синтез речи (TTS)"), self)
         lbl_sub = CaptionLabel(
-            "Озвучка текста нейросетевыми голосами Microsoft Neural с эффектами войс-чейнджера прямо в микрофон собеседникам",
+            tr("tts_subtitle", "Озвучивание любого текста естественными голосами Microsoft Neural прямо в микрофон и наушники"),
             self
         )
         lbl_sub.setStyleSheet("color: rgba(255, 255, 255, 0.6);")
@@ -157,7 +181,7 @@ class FluentTTSInterface(QWidget):
         i_layout.setSpacing(14)
 
         self.text_input = TextEdit(card_input)
-        self.text_input.setPlaceholderText("Введите любой текст для озвучки в микрофон или выберите фразу ниже...")
+        self.text_input.setPlaceholderText(tr("tts_input_placeholder", "Введите текст для озвучивания (поддерживается русский и английский)..."))
         self.text_input.setFixedHeight(85)
         i_layout.addWidget(self.text_input)
 
@@ -168,21 +192,21 @@ class FluentTTSInterface(QWidget):
         # Voice
         v_col = QVBoxLayout()
         v_col.setSpacing(4)
-        v_col.addWidget(BodyLabel("Голос озвучки:", card_input))
+        v_col.addWidget(BodyLabel(tr("tts_voice_label", "Голос озвучки:"), card_input))
         self.combo_voice = ComboBox(card_input)
         self.combo_voice.setFixedHeight(32)
         for v in AVAILABLE_VOICES:
-            self.combo_voice.addItem(v["name"], userData=v["id"])
+            self.combo_voice.addItem(tr(f"voice_{v['id']}", v["name"]), userData=v["id"])
         v_col.addWidget(self.combo_voice)
         set_row.addLayout(v_col, stretch=2)
 
         # Voice Changer FX
         fx_col = QVBoxLayout()
         fx_col.setSpacing(4)
-        fx_col.addWidget(BodyLabel("Голосовой эффект (Voice FX):", card_input))
+        fx_col.addWidget(BodyLabel(tr("voice_fx_title", "Голосовой эффект (Voice FX):"), card_input))
         self.combo_fx = ComboBox(card_input)
         self.combo_fx.setFixedHeight(32)
-        for fx_id, fx_label in TTS_FX_OPTIONS:
+        for fx_id, fx_label in get_tts_fx_options():
             self.combo_fx.addItem(fx_label, userData=fx_id)
         fx_col.addWidget(self.combo_fx)
         set_row.addLayout(fx_col, stretch=2)
@@ -190,7 +214,7 @@ class FluentTTSInterface(QWidget):
         # Rate
         s_col = QVBoxLayout()
         s_col.setSpacing(4)
-        self.lbl_rate = BodyLabel("Скорость речи: 1.0x", card_input)
+        self.lbl_rate = BodyLabel(f"{tr('tts_speed_label', 'Скорость речи:')} 1.0x", card_input)
         s_col.addWidget(self.lbl_rate)
         self.slider_rate = Slider(Qt.Orientation.Horizontal, card_input)
         self.slider_rate.setRange(-40, 40)
@@ -202,32 +226,46 @@ class FluentTTSInterface(QWidget):
         i_layout.addLayout(set_row)
 
         # Sidetone toggle
-        self.chk_sidetone = CheckBox("Дублировать себе (слышать в динамиках / наушниках при отправке в микрофон)", card_input)
+        self.chk_sidetone = CheckBox(tr("tts_hear_myself", "Дублировать себе (слышать в динамиках / наушниках при отправке в микрофон)"), card_input)
         self.chk_sidetone.setChecked(True)
         i_layout.addWidget(self.chk_sidetone)
+
+        # Target Mic Dropdown Row
+        mic_row = QHBoxLayout()
+        mic_col = QVBoxLayout()
+        mic_col.setSpacing(2)
+        lbl_target_mic = CaptionLabel(tr("tts_target_mic_label", "Куда отправлять речь (микрофон / виртуальный кабель):"), card_input)
+        lbl_target_mic.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-weight: 600;")
+        self.combo_target_mic = ComboBox(card_input)
+        self.combo_target_mic.setFixedHeight(34)
+        self.combo_target_mic.currentIndexChanged.connect(self._on_target_mic_changed)
+        mic_col.addWidget(lbl_target_mic)
+        mic_col.addWidget(self.combo_target_mic)
+        mic_row.addLayout(mic_col)
+        i_layout.addLayout(mic_row)
 
         # Action Buttons
         act_row = QHBoxLayout()
         act_row.setSpacing(10)
 
-        self.btn_preview = PushButton(FluentIcon.VOLUME, "Прослушать", card_input)
+        self.btn_preview = PushButton(FluentIcon.VOLUME, tr("tts_preview_tooltip", "Прослушать"), card_input)
         self.btn_preview.setFixedHeight(38)
         self.btn_preview.clicked.connect(self._preview_now)
         act_row.addWidget(self.btn_preview, stretch=1)
 
-        self.btn_speak = PrimaryPushButton(FluentIcon.SEND, "Сказать в микрофон", card_input)
+        self.btn_speak = PrimaryPushButton(FluentIcon.SEND, tr("tts_btn_speak", "Сказать в микрофон"), card_input)
         self.btn_speak.setFixedHeight(38)
         self.btn_speak.clicked.connect(self._speak_now)
         act_row.addWidget(self.btn_speak, stretch=1)
 
-        self.btn_save = PushButton(FluentIcon.SAVE, "Сохранить на Саундборд", card_input)
+        self.btn_save = PushButton(FluentIcon.SAVE, tr("tts_btn_save_mp3", "Сохранить на Саундборд"), card_input)
         self.btn_save.setFixedHeight(38)
         self.btn_save.clicked.connect(self._save_to_soundboard)
         act_row.addWidget(self.btn_save, stretch=1)
 
         i_layout.addLayout(act_row)
 
-        self.lbl_status = CaptionLabel("Готов к озвучке", card_input)
+        self.lbl_status = CaptionLabel(tr("tts_status_ready", "Готов к озвучке"), card_input)
         self.lbl_status.setStyleSheet("color: rgba(255, 255, 255, 0.5);")
         i_layout.addWidget(self.lbl_status)
 
@@ -240,17 +278,17 @@ class FluentTTSInterface(QWidget):
         self.q_layout.setSpacing(12)
 
         q_head = QHBoxLayout()
-        q_title = SubtitleLabel("Быстрые фразы и пресеты озвучки", self.card_quick)
+        q_title = SubtitleLabel(tr("tts_quick_title", "Быстрые фразы и пресеты озвучки"), self.card_quick)
         q_head.addWidget(q_title)
         q_head.addStretch()
 
-        self.btn_add_phrase = PushButton(FluentIcon.ADD, "Добавить пресет", self.card_quick)
+        self.btn_add_phrase = PushButton(FluentIcon.ADD, tr("tts_btn_add_preset", "Добавить пресет"), self.card_quick)
         self.btn_add_phrase.setFixedHeight(32)
         self.btn_add_phrase.clicked.connect(self._prompt_add_phrase)
         q_head.addWidget(self.btn_add_phrase)
         self.q_layout.addLayout(q_head)
 
-        hint = CaptionLabel("Нажмите иконку отправки, чтобы мгновенно сказать в микрофон. Правый клик (ПКМ) — удалить пресет.", self.card_quick)
+        hint = CaptionLabel(tr("tts_quick_hint", "Нажмите иконку отправки, чтобы мгновенно сказать в микрофон. Правый клик (ПКМ) — удалить пресет."), self.card_quick)
         hint.setStyleSheet("color: rgba(255, 255, 255, 0.45);")
         self.q_layout.addWidget(hint)
 
@@ -293,7 +331,7 @@ class FluentTTSInterface(QWidget):
         fx = preset.get("fx", "normal")
         fx_badge = ""
         if fx != "normal":
-            for fid, fname in TTS_FX_OPTIONS:
+            for fid, fname in get_tts_fx_options():
                 if fid == fx:
                     fx_badge = f"[{fname}] "
                     break
@@ -305,21 +343,21 @@ class FluentTTSInterface(QWidget):
         btn_paste = PushButton(display_text, card)
         btn_paste.setFixedHeight(34)
         btn_paste.setStyleSheet("text-align: left; padding: 4px 8px; font-size: 12px; border: none; background: transparent;")
-        btn_paste.setToolTip("Вставить фразу и параметры в поле ввода")
+        btn_paste.setToolTip(tr("tts_paste_tooltip", "Вставить фразу и параметры в поле ввода"))
         btn_paste.clicked.connect(lambda checked, p=preset: self._apply_preset_to_editor(p))
         h_layout.addWidget(btn_paste, stretch=1)
 
         # Quick direct play to microphone button (⚡ without changing editor)
         btn_direct_mic = TransparentToolButton(FluentIcon.SEND, card)
         btn_direct_mic.setFixedSize(32, 32)
-        btn_direct_mic.setToolTip("Сразу сказать в микрофон (без вставки в поле)")
+        btn_direct_mic.setToolTip(tr("tts_send_direct_tooltip", "Сразу сказать в микрофон (без вставки в поле)"))
         btn_direct_mic.clicked.connect(lambda checked, p=preset: self._play_preset_direct(p, play_mic=True))
         h_layout.addWidget(btn_direct_mic)
 
         # Quick preview button (🔊)
         btn_direct_prev = TransparentToolButton(FluentIcon.VOLUME, card)
         btn_direct_prev.setFixedSize(32, 32)
-        btn_direct_prev.setToolTip("Прослушать")
+        btn_direct_prev.setToolTip(tr("tts_preview_tooltip", "Прослушать"))
         btn_direct_prev.clicked.connect(lambda checked, p=preset: self._play_preset_direct(p, play_mic=False))
         h_layout.addWidget(btn_direct_prev)
 
@@ -332,26 +370,43 @@ class FluentTTSInterface(QWidget):
         menu = RoundMenu(parent=self)
         self._active_phrase_menu = menu
 
-        act_speak = Action(FluentIcon.SEND, "Сказать в микрофон", self)
+        act_speak = Action(FluentIcon.SEND, tr("tts_act_speak", "Сказать в микрофон"), self)
         act_speak.triggered.connect(lambda: self._play_preset_direct(preset, play_mic=True))
         menu.addAction(act_speak)
 
-        act_preview = Action(FluentIcon.VOLUME, "Прослушать", self)
+        act_preview = Action(FluentIcon.VOLUME, tr("tts_act_preview", "Прослушать"), self)
         act_preview.triggered.connect(lambda: self._play_preset_direct(preset, play_mic=False))
         menu.addAction(act_preview)
 
-        act_paste = Action(FluentIcon.EDIT, "Вставить в поле ввода", self)
+        act_paste = Action(FluentIcon.PASTE, tr("tts_act_paste", "Вставить в поле ввода"), self)
         act_paste.triggered.connect(lambda: self._apply_preset_to_editor(preset))
         menu.addAction(act_paste)
 
+        act_edit = Action(FluentIcon.EDIT, tr("tts_act_edit", "Редактировать пресет"), self)
+        act_edit.triggered.connect(lambda: self._edit_preset(preset))
+        menu.addAction(act_edit)
+
         menu.addSeparator()
 
-        act_del = Action(FluentIcon.DELETE, "Удалить пресет", self)
+        act_del = Action(FluentIcon.DELETE, tr("tts_act_delete", "Удалить пресет"), self)
         act_del.triggered.connect(lambda: self._delete_preset(preset))
         menu.addAction(act_del)
 
         menu.exec(global_pos)
         self._active_phrase_menu = None
+
+    def _edit_preset(self, preset: Dict[str, Any]):
+        dlg = TTSPresetDialog(self, preset=preset)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            data = dlg.get_data()
+            p_id = preset.get("id")
+            if p_id:
+                self.cfg.update_tts_preset(p_id, data)
+            else:
+                preset.update(data)
+                self.cfg.save_tts_presets()
+            self._refresh_quick_phrases()
+            self.lbl_status.setText(tr("tts_status_preset_updated", "Пресет обновлен: {text}...", text=data['text'][:20]))
 
     def _apply_preset_to_editor(self, preset: Dict[str, Any]):
         self.text_input.setPlainText(preset.get("text", ""))
@@ -382,7 +437,7 @@ class FluentTTSInterface(QWidget):
         rate_str = f"{'+' if rate_val >= 0 else ''}{rate_val}%"
 
         play_monitor = self.chk_sidetone.isChecked() if play_mic else True
-        self.lbl_status.setText(f"Генерация пресета «{text[:18]}...»")
+        self.lbl_status.setText(tr("tts_status_generating_preset", "Генерация пресета «{text}...»", text=text[:18]))
 
         def on_done(samples: Optional[np.ndarray]):
             if samples is not None and len(samples) > 0:
@@ -397,7 +452,7 @@ class FluentTTSInterface(QWidget):
 
                 self.sig_tts_direct_done.emit(samples, text, play_mic, play_monitor)
             else:
-                self.sig_tts_error.emit("Ошибка генерации речи")
+                self.sig_tts_error.emit(tr("tts_status_error", "Ошибка генерации речи"))
 
         self.tts.synthesize_async(text=text, voice=voice, rate=rate_str, callback=on_done)
 
@@ -411,15 +466,15 @@ class FluentTTSInterface(QWidget):
                 fx=data["fx"]
             )
             self._refresh_quick_phrases()
-            self.lbl_status.setText(f"Добавлен новый пресет: {data['text'][:20]}...")
+            self.lbl_status.setText(tr("tts_status_preset_added", "Добавлен новый пресет: {text}...", text=data['text'][:20]))
 
     def _delete_preset(self, preset: Dict[str, Any]):
         p_id = preset.get("id")
         p_text = preset.get("text", "")
         reply = QMessageBox.question(
             self,
-            "Удаление пресета",
-            f"Вы уверены, что хотите удалить пресет «{p_text}»?",
+            tr("tts_dlg_del_preset_title", "Удаление пресета"),
+            tr("tts_dlg_del_preset_msg", "Вы уверены, что хотите удалить пресет «{text}»?", text=p_text),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -431,11 +486,11 @@ class FluentTTSInterface(QWidget):
                 self.cfg.tts_presets = [p for p in self.cfg.tts_presets if p.get("text") != p_text]
                 self.cfg.save_tts_presets()
             self._refresh_quick_phrases()
-            self.lbl_status.setText("Пресет удален")
+            self.lbl_status.setText(tr("tts_status_preset_deleted", "Пресет удален"))
 
     def _on_rate_change(self, val: int):
         speed = 1.0 + (val / 100.0)
-        self.lbl_rate.setText(f"Скорость речи: {speed:.2f}x")
+        self.lbl_rate.setText(f"{tr('tts_speed_label', 'Скорость речи:')} {speed:.2f}x")
 
     def _speak_now(self):
         self._synthesize_and_play(play_mic=True, play_monitor=self.chk_sidetone.isChecked())
@@ -459,7 +514,7 @@ class FluentTTSInterface(QWidget):
         rate_val = self.slider_rate.value()
         rate_str = f"{'+' if rate_val >= 0 else ''}{rate_val}%"
 
-        self.lbl_status.setText("Генерация нейросетью...")
+        self.lbl_status.setText(tr("tts_status_generating", "Генерация нейросетью..."))
         self.btn_speak.setEnabled(False)
         self.btn_preview.setEnabled(False)
 
@@ -476,18 +531,18 @@ class FluentTTSInterface(QWidget):
 
                 self.sig_tts_synthesis_done.emit(samples, text, play_mic, play_monitor)
             else:
-                self.sig_tts_error.emit("Ошибка генерации речи")
+                self.sig_tts_error.emit(tr("tts_status_error", "Ошибка генерации речи"))
 
         self.tts.synthesize_async(text=text, voice=voice, rate=rate_str, callback=on_done)
 
     def _on_direct_done_main_thread(self, samples: np.ndarray, text: str, play_mic: bool, play_monitor: bool):
         self._is_synthesizing = False
         if play_mic and play_monitor:
-            self.lbl_status.setText(f"Транслируется в микрофон и для себя: «{text[:20]}»")
+            self.lbl_status.setText(tr("tts_status_playing_both", "Транслируется в микрофон и для себя: «{text}»", text=text[:20]))
         elif play_mic:
-            self.lbl_status.setText(f"Транслируется в микрофон: «{text[:20]}»")
+            self.lbl_status.setText(tr("tts_status_playing_mic", "Транслируется в микрофон: «{text}»", text=text[:20]))
         else:
-            self.lbl_status.setText(f"Предпрослушивание: «{text[:20]}»")
+            self.lbl_status.setText(tr("tts_status_playing_monitor", "Предпрослушивание: «{text}»", text=text[:20]))
         self.engine.play_tts_samples(samples, play_monitor=play_monitor, play_mic=play_mic)
 
     def _on_synthesis_done_main_thread(self, samples: np.ndarray, text: str, play_mic: bool, play_monitor: bool):
@@ -495,11 +550,11 @@ class FluentTTSInterface(QWidget):
         self.btn_speak.setEnabled(True)
         self.btn_preview.setEnabled(True)
         if play_mic and play_monitor:
-            self.lbl_status.setText("Воспроизводится в микрофон и для себя")
+            self.lbl_status.setText(tr("tts_status_playback_both", "Воспроизводится в микрофон и для себя"))
         elif play_mic:
-            self.lbl_status.setText("Воспроизводится в микрофон")
+            self.lbl_status.setText(tr("tts_status_playback_mic", "Воспроизводится в микрофон"))
         else:
-            self.lbl_status.setText("Воспроизводится (предпрослушивание)")
+            self.lbl_status.setText(tr("tts_status_playback_monitor", "Воспроизводится (предпрослушивание)"))
         self.engine.play_tts_samples(samples, play_monitor=play_monitor, play_mic=play_mic)
 
     def _on_error_main_thread(self, err_msg: str):
@@ -509,24 +564,24 @@ class FluentTTSInterface(QWidget):
         self.lbl_status.setText(err_msg)
 
     def _on_save_done_main_thread(self, filepath: str, short_title: str):
-        self.lbl_status.setText(f"Сохранено на Саундборд: {short_title}")
+        self.lbl_status.setText(tr("tts_status_saved_sb", "Сохранено на Саундборд: {title}", title=short_title))
         self.sound_saved_to_board.emit(filepath, short_title)
 
     def _save_to_soundboard(self):
         text = self.text_input.toPlainText().strip()
         if not text:
-            QMessageBox.warning(self, "Внимание", "Введите текст для создания звука.")
+            QMessageBox.warning(self, tr("tts_warn_empty_title", "Внимание"), tr("tts_warn_empty_msg", "Введите текст для создания звука."))
             return
 
         voice = self.combo_voice.currentData() or "ru-RU-DmitryNeural"
         fx = self.combo_fx.currentData() or "normal"
         rate_val = self.slider_rate.value()
         rate_str = f"{'+' if rate_val >= 0 else ''}{rate_val}%"
-        self.lbl_status.setText("Генерация аудиофайла...")
+        self.lbl_status.setText(tr("tts_status_file_gen", "Генерация аудиофайла..."))
 
         def on_done(samples: np.ndarray):
             if samples is None or len(samples) == 0:
-                self.sig_tts_error.emit("Ошибка создания аудиофайла")
+                self.sig_tts_error.emit(tr("tts_status_file_err", "Ошибка создания аудиофайла"))
                 return
 
             if fx != "normal":
@@ -555,3 +610,33 @@ class FluentTTSInterface(QWidget):
             self.sig_tts_save_done.emit(str(filepath), short_title)
 
         self.tts.synthesize_async(text=text, voice=voice, rate=rate_str, callback=on_done)
+
+    def _load_target_devices(self):
+        """Loads available audio output devices for target microphone into combo box."""
+        saved_target = self.cfg.get("mic_target_device_id")
+        self.engine.populate_target_mic_combobox(self.combo_target_mic, saved_target)
+
+    def _on_target_mic_changed(self, index: int):
+        dev_id = self.combo_target_mic.itemData(index)
+        QTimer.singleShot(20, lambda: self._apply_target_mic(dev_id))
+
+    def _apply_target_mic(self, dev_id: Optional[int]):
+        main_win = self.window()
+        if hasattr(main_win, "set_global_target_microphone"):
+            main_win.set_global_target_microphone(dev_id, source_tab=self)
+        else:
+            self.cfg.set("mic_target_device_id", dev_id)
+            self.engine.set_mic_target_device(dev_id)
+
+    def sync_target_mic(self, dev_id: Optional[int]):
+        """Synchronizes combo box selection from external changes."""
+        self.combo_target_mic.blockSignals(True)
+        found = False
+        for i in range(self.combo_target_mic.count()):
+            if self.combo_target_mic.itemData(i) == dev_id:
+                self.combo_target_mic.setCurrentIndex(i)
+                found = True
+                break
+        if not found and dev_id is None:
+            self.combo_target_mic.setCurrentIndex(0)
+        self.combo_target_mic.blockSignals(False)

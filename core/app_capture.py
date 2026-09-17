@@ -36,6 +36,7 @@ class AppCaptureManager:
         self.mic_volume = 1.0
         self.target_pid: Optional[int] = None
         self.target_app_name: Optional[str] = None
+        self.current_peak: float = 0.0
 
     @staticmethod
     def list_audio_sessions() -> List[Dict[str, Any]]:
@@ -94,6 +95,7 @@ class AppCaptureManager:
 
         self.is_capturing = False
         self._stop_event.set()
+        self.current_peak = 0.0
         if self._capture_thread and self._capture_thread.is_alive():
             self._capture_thread.join(timeout=1.0)
         self._capture_thread = None
@@ -166,6 +168,9 @@ class AppCaptureManager:
                             resampled[:, 0] = np.interp(target_indices, orig_indices, audio_data[:, 0])
                             resampled[:, 1] = np.interp(target_indices, orig_indices, audio_data[:, 1])
                             audio_data = resampled
+
+                    if len(audio_data) > 0:
+                        self.current_peak = float(np.max(np.abs(audio_data)))
 
                     # Push to both queues with drop if full
                     for q in (self.queue_monitor, self.queue_mic):
