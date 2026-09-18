@@ -442,25 +442,67 @@ class FluentMainWindow(FluentWindow):
         self.cfg.set("hide_cable_default_banner", True)
         self.driver_banner_box.setVisible(False)
 
-    def _on_set_default_recording_device(self):
-        ok = DriverManager.set_default_recording_device_to_cable()
-        self._check_driver_infobar()
-        if ok:
-            InfoBar.success(
-                title=tr("mic_default_success_title"),
-                content=tr("mic_default_success_msg"),
-                position=InfoBarPosition.TOP,
-                duration=4500,
-                parent=self
-            )
+    def set_global_mic_enabled(self, is_enabled: bool):
+        """Sets global microphone enabled and updates all UI switches and engine state."""
+        if hasattr(self, "switch_global_mic"):
+            self.switch_global_mic.setChecked(is_enabled)
         else:
-            InfoBar.info(
-                title=tr("mic_default_manual_title"),
-                content=tr("mic_default_manual_msg"),
-                position=InfoBarPosition.TOP,
-                duration=5000,
-                parent=self
-            )
+            self._on_global_mic_toggled(is_enabled)
+
+    def _sync_all_default_mic_buttons(self, is_cable: Optional[bool] = None):
+        """Updates default mic button text and icon across all interfaces."""
+        if is_cable is None:
+            is_cable = DriverManager.is_cable_output_default()
+        for tab in [
+            getattr(self, "app_stream_interface", None),
+            getattr(self, "voice_fx_interface", None),
+            getattr(self, "radio_interface", None)
+        ]:
+            if tab and hasattr(tab, "update_default_mic_btn_state"):
+                tab.update_default_mic_btn_state(is_cable)
+
+    def toggle_default_recording_device(self, parent_widget=None) -> bool:
+        """Toggles Windows default recording device between CABLE Output and physical microphone."""
+        is_cable = DriverManager.is_cable_output_default()
+        parent = parent_widget or self
+        if is_cable:
+            ok = DriverManager.restore_physical_recording_device()
+            self._sync_all_default_mic_buttons(False)
+            self._check_driver_infobar()
+            if ok:
+                InfoBar.success(
+                    title=tr("mic_restored_success_title", "Микрофон возвращен"),
+                    content=tr("mic_restored_success_msg", "Основной микрофон снова назначен устройством по умолчанию в Windows."),
+                    position=InfoBarPosition.TOP,
+                    duration=4000,
+                    parent=parent
+                )
+            return False
+        else:
+            ok = DriverManager.set_default_recording_device_to_cable()
+            self.set_global_mic_enabled(True)
+            self._sync_all_default_mic_buttons(True)
+            self._check_driver_infobar()
+            if ok:
+                InfoBar.success(
+                    title=tr("mic_default_success_title"),
+                    content=tr("mic_default_success_msg"),
+                    position=InfoBarPosition.TOP,
+                    duration=4500,
+                    parent=parent
+                )
+            else:
+                InfoBar.info(
+                    title=tr("mic_default_manual_title"),
+                    content=tr("mic_default_manual_msg"),
+                    position=InfoBarPosition.TOP,
+                    duration=5000,
+                    parent=parent
+                )
+            return True
+
+    def _on_set_default_recording_device(self):
+        self.toggle_default_recording_device(parent_widget=self)
 
     def _on_install_driver(self):
         success = DriverManager.launch_installer()

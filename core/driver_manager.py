@@ -132,26 +132,34 @@ class DriverManager:
         try:
             import pycaw.pycaw as pycaw
             enumerator = pycaw.AudioUtilities.GetDeviceEnumerator()
-            cur_def = enumerator.GetDefaultAudioEndpoint(pycaw.EDataFlow.eCapture.value, pycaw.ERole.eConsole.value)
             cable_id = cls.get_cable_capture_endpoint_id()
-            if cable_id and cur_def.GetId() == cable_id:
-                return True
             all_devs = {d.id: d.FriendlyName for d in pycaw.AudioUtilities.GetAllDevices()}
-            def_name = all_devs.get(cur_def.GetId(), "").lower()
-            return "cable output" in def_name or ("cable" in def_name and "16ch" not in def_name)
+            for role in (pycaw.ERole.eConsole.value, pycaw.ERole.eCommunications.value):
+                try:
+                    cur_def = enumerator.GetDefaultAudioEndpoint(pycaw.EDataFlow.eCapture.value, role)
+                    if cable_id and cur_def.GetId() == cable_id:
+                        return True
+                    def_name = all_devs.get(cur_def.GetId(), "").lower()
+                    if "cable output" in def_name or ("cable" in def_name and "16ch" not in def_name):
+                        return True
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[DriverManager] is_cable_output_default error: {e}")
         return False
 
     @classmethod
     def set_default_recording_device_to_cable(cls) -> bool:
-        """Sets CABLE Output as the Windows default recording and communication device."""
+        """Sets CABLE Output as the Windows default recording and communication device across all roles."""
         try:
             import pycaw.pycaw as pycaw
             cable_id = cls.get_cable_capture_endpoint_id()
             if cable_id:
-                pycaw.AudioUtilities.SetDefaultDevice(cable_id)
-                print(f"[DriverManager] SetDefaultDevice succeeded for {cable_id}")
+                pycaw.AudioUtilities.SetDefaultDevice(
+                    cable_id,
+                    roles=[pycaw.ERole.eConsole, pycaw.ERole.eMultimedia, pycaw.ERole.eCommunications]
+                )
+                print(f"[DriverManager] SetDefaultDevice succeeded for {cable_id} (all roles)")
                 return True
         except Exception as e:
             print(f"[DriverManager] set_default_recording_device_to_cable error: {e}")
@@ -189,13 +197,16 @@ class DriverManager:
 
     @classmethod
     def restore_physical_recording_device(cls) -> bool:
-        """Restores physical microphone as the Windows default recording device."""
+        """Restores physical microphone as the Windows default recording device across all roles."""
         try:
             import pycaw.pycaw as pycaw
             phys_id = cls.get_physical_microphone_endpoint_id()
             if phys_id:
-                pycaw.AudioUtilities.SetDefaultDevice(phys_id)
-                print(f"[DriverManager] Restored physical microphone as default: {phys_id}")
+                pycaw.AudioUtilities.SetDefaultDevice(
+                    phys_id,
+                    roles=[pycaw.ERole.eConsole, pycaw.ERole.eMultimedia, pycaw.ERole.eCommunications]
+                )
+                print(f"[DriverManager] Restored physical microphone as default: {phys_id} (all roles)")
                 return True
         except Exception as e:
             print(f"[DriverManager] restore_physical_recording_device error: {e}")

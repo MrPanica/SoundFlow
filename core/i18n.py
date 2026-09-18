@@ -388,6 +388,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "switch_off": "ВЫКЛ",
 
         # Driver & Microphone Notifications
+        "mic_set_default_btn": "Сделать микрофоном по умолчанию",
+        "mic_restore_default_btn": "Вернуть стандартный микрофон",
+        "mic_restored_success_title": "Микрофон возвращен",
+        "mic_restored_success_msg": "Основной микрофон снова назначен устройством по умолчанию в Windows.",
         "mic_default_success_title": "Микрофон настроен!",
         "mic_default_success_msg": "CABLE Output успешно назначен микрофоном по умолчанию в Windows. Теперь звук слышен во всех играх и Discord!",
         "mic_default_manual_title": "Параметры записи Windows",
@@ -1034,6 +1038,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "switch_off": "OFF",
 
         # Driver & Microphone Notifications
+        "mic_set_default_btn": "Set as Default Microphone",
+        "mic_restore_default_btn": "Restore Default Microphone",
+        "mic_restored_success_title": "Microphone Restored",
+        "mic_restored_success_msg": "Primary physical microphone restored as default in Windows.",
         "mic_default_success_title": "Microphone Configured!",
         "mic_default_success_msg": "CABLE Output successfully set as default Windows microphone. Voice and soundboard audio will now be heard in games and Discord!",
         "mic_default_manual_title": "Windows Recording Settings",

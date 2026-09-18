@@ -71,8 +71,8 @@ class AppCaptureManager:
     def __init__(self, sample_rate: int = 48000, buffer_size: int = 1024):
         self.sample_rate = sample_rate
         self.buffer_size = buffer_size
-        self.queue_monitor = queue.Queue(maxsize=100)
-        self.queue_mic = queue.Queue(maxsize=100)
+        self.queue_monitor = queue.Queue(maxsize=3)
+        self.queue_mic = queue.Queue(maxsize=3)
         self.is_capturing = False
         self._capture_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -115,6 +115,19 @@ class AppCaptureManager:
             self.target_app_names = []
         else:
             self.target_app_names = [val]
+
+    def update_targets(self, pids: List[int], names: List[str]):
+        """Dynamically updates target processes and refreshes routing if stream is active."""
+        self.target_pids = list(pids)
+        self.target_app_names = list(names)
+        self._target_meters = []
+        if self.is_capturing and hasattr(self, "router") and self.router.is_available:
+            self.router.restore_all()
+            if self.target_pids or self.target_app_names:
+                ok = self.router.route_pids_to_cable(self.target_pids, self.target_app_names)
+                self.is_routed_to_cable = bool(ok)
+            else:
+                self.is_routed_to_cable = False
 
     @staticmethod
     def list_audio_sessions() -> List[Dict[str, Any]]:
@@ -291,7 +304,7 @@ class AppCaptureManager:
             return True, 1.0
 
         now = time.time()
-        if now - self._last_meter_refresh > 1.2 or not self._target_meters:
+        if now - self._last_meter_refresh > 2.5 or not self._target_meters:
             self._target_meters = []
             try:
                 sessions = AudioUtilities.GetAllSessions()
@@ -413,6 +426,13 @@ class AppCaptureManager:
 
             while not self._stop_event.is_set():
                 try:
+                    # Purge any stale loopback buffer backlog to guarantee real-time latency (<25ms)
+                    try:
+                        while stream.get_read_available() > self.buffer_size:
+                            stream.read(self.buffer_size, exception_on_overflow=False)
+                    except Exception:
+                        pass
+
                     raw_data = stream.read(self.buffer_size, exception_on_overflow=False)
                     audio_data = np.frombuffer(raw_data, dtype=np.float32)
 
@@ -439,26 +459,29 @@ class AppCaptureManager:
 
                         # Routed mode: Chrome renders directly to CABLE Input.
                         # VB-Cable kernel driver pipes CABLE Input straight to CABLE Output (mic).
-                        # We send zeros to queue_mic so audio_engine does NOT inject duplicate audio.
-                        if self.queue_mic.full():
+                        # Drain queue_mic so no stale audio lingers.
+                        while not self.queue_mic.empty():
                             try:
                                 self.queue_mic.get_nowait()
                             except queue.Empty:
-                                pass
-                        self.queue_mic.put_nowait(np.zeros_like(audio_data))
+                                break
 
                         # Monitor queue:
-                        # If mute_self is enabled, local monitor is complete silence (0.0).
+                        # If mute_self is enabled, local monitor is complete silence.
                         # If disabled (user turned ON headphones monitor), provide audio_data.
-                        if self.queue_monitor.full():
-                            try:
-                                self.queue_monitor.get_nowait()
-                            except queue.Empty:
-                                pass
-                        if self.mute_self:
-                            self.queue_monitor.put_nowait(np.zeros_like(audio_data))
-                        else:
+                        if not self.mute_self:
+                            if self.queue_monitor.full():
+                                try:
+                                    self.queue_monitor.get_nowait()
+                                except queue.Empty:
+                                    pass
                             self.queue_monitor.put_nowait(audio_data)
+                        else:
+                            while not self.queue_monitor.empty():
+                                try:
+                                    self.queue_monitor.get_nowait()
+                                except queue.Empty:
+                                    break
 
                     else:
                         # Fallback / System Mix mode:
@@ -487,15 +510,19 @@ class AppCaptureManager:
                                 pass
                         self.queue_mic.put_nowait(mic_audio)
 
-                        if self.queue_monitor.full():
-                            try:
-                                self.queue_monitor.get_nowait()
-                            except queue.Empty:
-                                pass
-                        if self.mute_self or ((self.target_pids or self.target_app_names) and self._current_gate_gain == 0.0):
-                            self.queue_monitor.put_nowait(np.zeros_like(audio_data))
-                        else:
+                        if not self.mute_self and ((not self.target_pids and not self.target_app_names) or self._current_gate_gain > 0.0):
+                            if self.queue_monitor.full():
+                                try:
+                                    self.queue_monitor.get_nowait()
+                                except queue.Empty:
+                                    pass
                             self.queue_monitor.put_nowait(mic_audio)
+                        else:
+                            while not self.queue_monitor.empty():
+                                try:
+                                    self.queue_monitor.get_nowait()
+                                except queue.Empty:
+                                    break
 
                 except Exception as ex:
                     if self._stop_event.is_set():
@@ -524,18 +551,24 @@ class AppCaptureManager:
             self.is_capturing = False
 
     def get_chunk_monitor(self) -> Optional[np.ndarray]:
-        """Pulls the next available audio chunk for monitor."""
-        try:
-            return self.queue_monitor.get_nowait()
-        except queue.Empty:
-            return None
+        """Pulls the latest available audio chunk for monitor, discarding stale chunks."""
+        latest = None
+        while True:
+            try:
+                latest = self.queue_monitor.get_nowait()
+            except queue.Empty:
+                break
+        return latest
 
     def get_chunk_mic(self) -> Optional[np.ndarray]:
-        """Pulls the next available audio chunk for mic target."""
-        try:
-            return self.queue_mic.get_nowait()
-        except queue.Empty:
-            return None
+        """Pulls the latest available audio chunk for mic target, discarding stale chunks."""
+        latest = None
+        while True:
+            try:
+                latest = self.queue_mic.get_nowait()
+            except queue.Empty:
+                break
+        return latest
 
     def get_chunk(self) -> Optional[np.ndarray]:
         """Backwards-compatible fallback."""

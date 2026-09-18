@@ -556,22 +556,12 @@ class FluentSettingsInterface(QWidget):
             self.btn_install_drv.setText(tr("settings_driver_btn_install", "Установить официальный драйвер (VB-Cable)"))
 
     def _set_default_recording_device(self):
-        ok = DriverManager.set_default_recording_device_to_cable()
-        self._update_drv_status()
-        if ok:
-            InfoBar.success(
-                tr("mic_default_success_title", "Микрофон настроен"),
-                tr("mic_default_success_msg", "CABLE Output успешно назначен микрофоном по умолчанию в Windows!"),
-                parent=self.window() or self,
-                duration=3500
-            )
+        main_win = self.window()
+        if hasattr(main_win, "toggle_default_recording_device"):
+            main_win.toggle_default_recording_device(parent_widget=self)
         else:
-            InfoBar.info(
-                tr("mic_default_manual_title", "Настройка микрофона"),
-                tr("mic_default_manual_msg", "Открыты параметры записи Windows. Выберите CABLE Output устройством по умолчанию."),
-                parent=self.window() or self,
-                duration=4500
-            )
+            DriverManager.set_default_recording_device_to_cable()
+        self._update_drv_status()
 
     def _load_devices(self):
         devices = AudioEngine.get_audio_devices()

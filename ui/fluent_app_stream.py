@@ -421,6 +421,7 @@ class FluentAppStreamInterface(QWidget):
         self.btn_set_default_mic.setFixedHeight(28)
         self.btn_set_default_mic.clicked.connect(self._set_default_mic)
         guide_btns_row.addWidget(self.btn_set_default_mic)
+        self.update_default_mic_btn_state()
         guide_btns_row.addStretch()
 
         mic_col.addLayout(guide_btns_row)
@@ -538,8 +539,7 @@ class FluentAppStreamInterface(QWidget):
         if self._is_system_mix or (not self._selected_names and not self._selected_pids):
             self.btn_select_apps.setAppIcon(FluentIcon.SPEAKERS)
             self.btn_select_apps.setText(tr("app_stream_all_system_mix", "Все системные звуки (микс ПК)"))
-            self.engine.app_capture.target_pids = []
-            self.engine.app_capture.target_app_names = []
+            self.engine.app_capture.update_targets([], [])
         else:
             selected_apps = [
                 a for a in self._audio_apps
@@ -549,8 +549,7 @@ class FluentAppStreamInterface(QWidget):
             if count == 0:
                 self.btn_select_apps.setAppIcon(FluentIcon.SPEAKERS)
                 self.btn_select_apps.setText(tr("app_stream_all_system_mix", "Все системные звуки (микс ПК)"))
-                self.engine.app_capture.target_pids = []
-                self.engine.app_capture.target_app_names = []
+                self.engine.app_capture.update_targets([], [])
                 return
 
             all_pids: List[int] = []
@@ -558,8 +557,7 @@ class FluentAppStreamInterface(QWidget):
                 all_pids.extend(a.get("pids", [a["pid"]]))
             all_names = [a["name"] for a in selected_apps]
 
-            self.engine.app_capture.target_pids = list(set(all_pids))
-            self.engine.app_capture.target_app_names = all_names
+            self.engine.app_capture.update_targets(list(set(all_pids)), all_names)
 
             if count == 1:
                 app = selected_apps[0]
@@ -726,25 +724,40 @@ class FluentAppStreamInterface(QWidget):
         saved_target = self.cfg.get("mic_target_device_id")
         self.engine.populate_target_mic_combobox(self.combo_target_mic, saved_target)
 
-    def _set_default_mic(self):
+    def update_default_mic_btn_state(self, is_cable: Optional[bool] = None):
+        """Updates button label and icon based on whether CABLE Output is Windows default mic."""
+        if not hasattr(self, "btn_set_default_mic"):
+            return
         from core.driver_manager import DriverManager
-        ok = DriverManager.set_default_recording_device_to_cable()
-        if ok:
-            InfoBar.success(
-                title=tr("mic_default_success_title"),
-                content=tr("mic_default_success_msg"),
-                position=InfoBarPosition.TOP,
-                parent=self,
-                duration=4000
-            )
+        if is_cable is None:
+            is_cable = DriverManager.is_cable_output_default()
+        if is_cable:
+            self.btn_set_default_mic.setText(tr("mic_restore_default_btn", "Вернуть стандартный микрофон"))
+            self.btn_set_default_mic.setIcon(FluentIcon.RETURN)
         else:
-            InfoBar.info(
-                title=tr("mic_default_manual_title"),
-                content=tr("mic_default_manual_msg"),
-                position=InfoBarPosition.TOP,
-                parent=self,
-                duration=4500
-            )
+            self.btn_set_default_mic.setText(tr("mic_set_default_btn", "Сделать микрофоном по умолчанию"))
+            self.btn_set_default_mic.setIcon(FluentIcon.SETTING)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.update_default_mic_btn_state()
+
+    def _set_default_mic(self):
+        main_win = self.window()
+        if hasattr(main_win, "toggle_default_recording_device"):
+            main_win.toggle_default_recording_device(parent_widget=self)
+        else:
+            from core.driver_manager import DriverManager
+            is_cable = DriverManager.is_cable_output_default()
+            if is_cable:
+                DriverManager.restore_physical_recording_device()
+            else:
+                DriverManager.set_default_recording_device_to_cable()
+                self.engine.mic_passthrough_enabled = True
+                self.cfg.set("mic_passthrough_enabled", True)
+                if not self.engine.mic_input_stream or not self.engine.mic_input_stream.active:
+                    self.engine.start_mic_input()
+            self.update_default_mic_btn_state()
 
     def _on_target_mic_changed(self, index: int):
         dev_id = self.combo_target_mic.itemData(index)
