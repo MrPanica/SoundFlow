@@ -52,15 +52,33 @@ sys.excepthook = emergency_crash_handler
 def on_app_exit():
     try:
         from core.driver_manager import DriverManager
-        from core.config_manager import ConfigManager
-        cfg = ConfigManager()
-        beh = cfg.get("exit_mic_behavior", "restore_default")
-        if beh in ("restore_default", "both"):
-            DriverManager.restore_physical_recording_device()
+        DriverManager.restore_physical_recording_device()
     except Exception:
         pass
 
 atexit.register(on_app_exit)
+
+def _sig_handler(signum, frame):
+    on_app_exit()
+    sys.exit(0)
+
+try:
+    signal.signal(signal.SIGINT, _sig_handler)
+    signal.signal(signal.SIGTERM, _sig_handler)
+except Exception:
+    pass
+
+if sys.platform == "win32":
+    try:
+        import ctypes
+        HandlerRoutine = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)
+        def _win_ctrl_handler(ctrl_type):
+            on_app_exit()
+            return False
+        _global_ctrl_ref = HandlerRoutine(_win_ctrl_handler)
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(_global_ctrl_ref, True)
+    except Exception:
+        pass
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
