@@ -100,7 +100,8 @@ To allow teammates in Discord, Telegram, or games to hear your soundboard and st
 
 ### Option 1 (Recommended): Prebuilt Portable Executable
 Download the latest **`SoundFlow.exe`** from [**GitHub Releases**](https://github.com/MrPanica/SoundFlow/releases).  
-*No installation required — completely portable, runs out of the box.*
+*No installation required — completely portable, runs out of the box.*  
+> 💡 **Windows SmartScreen Note**: As an open-source tool without a paid commercial certificate (EV Code Signing), Windows Defender may show an unknown publisher warning. Click **More info** $\to$ **Run anyway**.
 
 ### Option 2: Run from Source
 ```bash
@@ -213,7 +214,8 @@ python run.py
 
 ### Вариант 1 (Рекомендуемый): Скачать готовый EXE
 Скачайте готовый релиз **`SoundFlow.exe`** из раздела [**GitHub Releases**](https://github.com/MrPanica/SoundFlow/releases).  
-*Программа портативная, установка не требуется.*
+*Программа портативная, установка не требуется.*  
+> 💡 **Примечание о Windows SmartScreen**: Поскольку проект с открытым исходным кодом распространяется бесплатно без платного коммерческого сертификата (EV Code Signing), Windows Defender может показать окно предупреждения. Нажмите **«Подробнее»** $\to$ **«Выполнить в любом случае»**.
 
 ### Вариант 2: Запуск из исходников
 ```bash

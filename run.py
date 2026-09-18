@@ -11,6 +11,27 @@ import atexit
 import traceback
 from pathlib import Path
 
+# Windows DLL directory registration for PyInstaller onefile bundles
+if sys.platform == "win32":
+    if hasattr(sys, "_MEIPASS"):
+        meipass = sys._MEIPASS
+        for candidate in [
+            meipass,
+            os.path.join(meipass, "numpy.libs"),
+            os.path.join(meipass, "PyQt6", "Qt6", "bin"),
+        ]:
+            if os.path.isdir(candidate):
+                try:
+                    os.add_dll_directory(candidate)
+                except Exception:
+                    pass
+        os.environ["PATH"] = (
+            f"{meipass};"
+            f"{os.path.join(meipass, 'numpy.libs')};"
+            f"{os.path.join(meipass, 'PyQt6', 'Qt6', 'bin')};"
+            + os.environ.get("PATH", "")
+        )
+
 # Add project root to sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
