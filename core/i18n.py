@@ -127,6 +127,15 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "app_stream_open_mixer_btn": "⚙️ Открыть микшер Windows (направить вывод на CABLE Input)",
         "app_stream_open_mixer_tip": "В открывшемся окне Windows выберите CABLE Input в качестве устройства вывода для выбранных приложений.",
         "app_stream_vol_monitor_tip": "Слышать в наушниках (0% = без эха, звук идет напрямую из Windows):",
+        "app_stream_hear_myself": "Слышать самому",
+        "app_stream_mon_hint": "Воспроизводить захваченный звук в ваших динамиках / наушниках",
+        "app_stream_mon_vol": "Слышать в наушниках: {vol}%",
+        "app_stream_mon_disabled": "Отключено (заглушено у себя, звук идет только тиммейтам)",
+        "app_stream_to_mic": "Транслировать в микрофон",
+        "app_stream_mic_hint": "Направлять в виртуальный кабель (Discord, игры, OBS)",
+        "app_stream_mic_vol_label": "В микрофон (тиммейтам): {vol}%",
+        "app_stream_mic_disabled": "Отключено (звук не идет в микрофон)",
+        "app_stream_apply_close": "✓ Готово (закрыть список)",
 
         # Voice FX
         "voice_fx_title": "Микрофон и Voice Changer (FX)",
@@ -764,6 +773,15 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "app_stream_open_mixer_btn": "⚙️ Open Windows Mixer (route app output to CABLE Input)",
         "app_stream_open_mixer_tip": "In Windows Settings, set the output device of your selected applications to CABLE Input.",
         "app_stream_vol_monitor_tip": "Hear in headphones (0% = no echo, audio plays directly from Windows):",
+        "app_stream_hear_myself": "Hear Myself",
+        "app_stream_mon_hint": "Play captured audio in your speakers / headphones",
+        "app_stream_mon_vol": "Hear in headphones: {vol}%",
+        "app_stream_mon_disabled": "Muted for self (streamed only to teammates in mic)",
+        "app_stream_to_mic": "Stream to Microphone",
+        "app_stream_mic_hint": "Route audio to virtual cable (Discord, games, OBS)",
+        "app_stream_mic_vol_label": "To microphone (teammates): {vol}%",
+        "app_stream_mic_disabled": "Disabled (audio does not go to microphone)",
+        "app_stream_apply_close": "✓ Done (close list)",
 
         # Voice FX
         "voice_fx_title": "Microphone & Voice Changer (FX)",
