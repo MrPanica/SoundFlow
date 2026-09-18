@@ -14,7 +14,8 @@ param(
     [string]$Notes = "",
     [switch]$BuildOnly,
     [switch]$NoBuild,
-    [switch]$PushTag
+    [switch]$PushTag,
+    [switch]$Clean
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,6 +23,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 
 $argsList = @()
+if ($Clean) { $argsList += "--clean" }
 if ($BuildOnly) { $argsList += "--build-only" }
 if ($NoBuild) { $argsList += "--no-build" }
 if ($PushTag) { $argsList += "--push-tag" }

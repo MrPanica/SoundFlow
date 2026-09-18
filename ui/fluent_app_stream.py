@@ -111,22 +111,40 @@ class MultiSelectAppMenu(RoundMenu):
     """
     Custom RoundMenu for selecting multiple applications.
     Checkable items do not close the menu when clicked, enabling seamless multi-selection.
-    Always maintains a wide, comfortable width so application titles and checkmarks are clearly visible.
+    Always maintains a wide, comfortable width matching the parent button so application
+    titles and checkmarks are clearly visible from the very first opening and upon reopenings.
     """
 
-    def __init__(self, min_width: int = 560, parent=None):
+    def __init__(self, target_width: int = 600, parent=None):
         super().__init__(parent=parent)
-        self._min_width = max(min_width, 560)
+        self.target_width = max(target_width, 600)
         self.view.setItemDelegate(AppMenuItemDelegate(self.view))
         self.view.setObjectName("multiSelectAppMenu")
         self.view.setMaxVisibleItems(14)
-        self.view.setMinimumWidth(self._min_width)
+        m = self.layout().contentsMargins()
+        self.view_width = self.target_width - m.left() - m.right()
+        self.view.setFixedWidth(self.view_width)
 
     def _adjustItemText(self, item: QListWidgetItem, action: QAction):
-        w = super()._adjustItemText(item, action)
-        w = max(w + 48, self._min_width - 24)
+        w = self.view_width - 8
         item.setSizeHint(QSize(w, self.itemHeight))
         return w
+
+    def addSeparator(self):
+        m = self.view.viewportMargins()
+        w = self.view_width - m.left() - m.right()
+        item = QListWidgetItem()
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        item.setSizeHint(QSize(w, 9))
+        self.view.addItem(item)
+        item.setData(Qt.ItemDataRole.DecorationRole, "seperator")
+        self.adjustSize()
+
+    def adjustSize(self):
+        m = self.layout().contentsMargins()
+        self.view.setFixedWidth(self.view_width)
+        h = self.view.height() + m.top() + m.bottom()
+        self.setFixedSize(self.target_width, h)
 
     def _onItemClicked(self, item):
         action = item.data(Qt.ItemDataRole.UserRole)
@@ -397,9 +415,8 @@ class FluentAppStreamInterface(QWidget):
 
     def _show_apps_menu(self):
         """Builds and displays the MultiSelectAppMenu directly beneath the dropdown button."""
-        btn_w = self.btn_select_apps.width()
-        menu_w = max(btn_w, 560)
-        self.menu_apps = MultiSelectAppMenu(min_width=menu_w, parent=self)
+        target_w = max(self.btn_select_apps.width(), 600)
+        self.menu_apps = MultiSelectAppMenu(target_width=target_w, parent=self)
 
         # 1. System Mix Action
         act_mix = Action(FluentIcon.SPEAKERS, tr("app_stream_all_system_mix", "Все системные звуки (микс ПК)"), self.menu_apps)
@@ -439,11 +456,10 @@ class FluentAppStreamInterface(QWidget):
 
         # 4. Explicit Done / Close action
         act_done = Action(FluentIcon.ACCEPT, tr("app_stream_apply_close", "✓ Готово (закрыть список)"), self.menu_apps)
+        act_done.triggered.connect(self.menu_apps.close)
         self.menu_apps.addAction(act_done)
 
-        # Ensure menu layout is sized to full target width
-        self.menu_apps.view.setMinimumWidth(menu_w)
-        self.menu_apps.view.adjustSize()
+        # Ensure layout and fixed size are applied
         self.menu_apps.adjustSize()
 
         # Anchor menu nicely beneath the button

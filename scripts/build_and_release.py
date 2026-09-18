@@ -15,6 +15,8 @@ import subprocess
 import urllib.request
 import urllib.parse
 import json
+import shutil
+import tempfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -62,11 +64,70 @@ def get_git_remote_repo() -> str:
     return "MrPanica/SoundFlow"
 
 
-def build_binary() -> Path:
-    """Builds SoundFlow.exe using PyInstaller and verifies output."""
+def cleanup_temp_and_build(clean_build: bool = True, clean_temp: bool = True, clean_dist: bool = False):
+    """
+    Cleans up past compilation debris:
+    1. Removes workspace 'build/' directory (hundreds of MB of temporary object files).
+    2. Cleans orphaned PyInstaller extraction folders (_MEI*) in OS Temp directory.
+    3. Optionally removes 'dist/' directory.
+    """
+    print("[CLEANUP] Cleaning temporary files and build artifacts...")
+    freed_bytes = 0
+
+    # 1. Clean workspace build directory
+    build_dir = PROJECT_ROOT / "build"
+    if clean_build and build_dir.exists():
+        try:
+            for p in build_dir.rglob("*"):
+                if p.is_file():
+                    freed_bytes += p.stat().st_size
+            shutil.rmtree(build_dir, ignore_errors=True)
+            print(f"[CLEANUP] Removed workspace build directory: {build_dir}")
+        except Exception as e:
+            print(f"[CLEANUP] Warning removing build dir: {e}")
+
+    # 2. Clean dist directory if requested
+    if clean_dist:
+        dist_dir = PROJECT_ROOT / "dist"
+        if dist_dir.exists():
+            try:
+                for p in dist_dir.rglob("*"):
+                    if p.is_file():
+                        freed_bytes += p.stat().st_size
+                shutil.rmtree(dist_dir, ignore_errors=True)
+                print(f"[CLEANUP] Removed workspace dist directory: {dist_dir}")
+            except Exception as e:
+                print(f"[CLEANUP] Warning removing dist dir: {e}")
+
+    # 3. Clean orphaned _MEI* temp folders in tempfile.gettempdir()
+    if clean_temp:
+        temp_dir = Path(tempfile.gettempdir())
+        try:
+            for item in temp_dir.glob("_MEI*"):
+                if item.is_dir():
+                    try:
+                        item_size = sum(f.stat().st_size for f in item.rglob('*') if f.is_file())
+                        shutil.rmtree(item, ignore_errors=False)
+                        freed_bytes += item_size
+                        print(f"[CLEANUP] Removed orphaned temp folder: {item.name}")
+                    except Exception:
+                        # Folder is currently locked by an active running process
+                        pass
+        except Exception as e:
+            print(f"[CLEANUP] Warning scanning temp dir: {e}")
+
+    mb_freed = freed_bytes / (1024 * 1024)
+    print(f"[CLEANUP] Completed. Freed approximately {mb_freed:.2f} MB of disk space.")
+
+
+def build_binary(keep_build: bool = False) -> Path:
+    """Builds SoundFlow.exe using PyInstaller, copies to root, and cleans temporary artifacts."""
     print("=" * 60)
     print(">>> [1/3] Building SoundFlow.exe via PyInstaller...")
     print("=" * 60)
+
+    # 1. Clean previous build artifacts and orphaned temp before compilation
+    cleanup_temp_and_build(clean_build=True, clean_temp=True, clean_dist=False)
 
     # Stop any existing running instance
     try:
@@ -91,6 +152,18 @@ def build_binary() -> Path:
     exe_path = PROJECT_ROOT / "dist" / "SoundFlow.exe"
     if not exe_path.exists():
         raise FileNotFoundError(f"dist/SoundFlow.exe not found at {exe_path}")
+
+    # Copy binary to PROJECT_ROOT for direct execution
+    root_exe = PROJECT_ROOT / "SoundFlow.exe"
+    try:
+        shutil.copy2(exe_path, root_exe)
+        print(f"[SUCCESS] Copied executable to root: {root_exe}")
+    except Exception as e:
+        print(f"[WARNING] Could not copy {exe_path.name} to {root_exe}: {e}")
+
+    # 2. Clean temporary build directory unless user explicitly asked to keep it
+    if not keep_build:
+        cleanup_temp_and_build(clean_build=True, clean_temp=True, clean_dist=False)
 
     size_mb = exe_path.stat().st_size / (1024 * 1024)
     print(f"[SUCCESS] Built: {exe_path.name} ({size_mb:.2f} MB)")
@@ -189,13 +262,20 @@ def main():
     parser.add_argument("--build-only", action="store_true", help="Only build binary without publishing to GitHub")
     parser.add_argument("--no-build", action="store_true", help="Skip build step and use existing dist/SoundFlow.exe")
     parser.add_argument("--push-tag", action="store_true", help="Also create and push local git tag to origin")
+    parser.add_argument("--clean", action="store_true", help="Only clean temporary build files, dist, and OS temp debris without building")
+    parser.add_argument("--keep-build", action="store_true", help="Do not delete intermediate build/ directory after compilation")
     args = parser.parse_args()
+
+    if args.clean:
+        cleanup_temp_and_build(clean_build=True, clean_temp=True, clean_dist=True)
+        print("[DONE] Cleanup finished.")
+        return
 
     tag = args.tag
     title = args.title or f"SoundFlow Studio {tag}"
 
     if not args.no_build:
-        exe_path = build_binary()
+        exe_path = build_binary(keep_build=args.keep_build)
     else:
         exe_path = PROJECT_ROOT / "dist" / "SoundFlow.exe"
         if not exe_path.exists():
