@@ -43,6 +43,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "close_to_tray": True,
     "buffer_size": 1024,
     "exit_mic_behavior": "restore_default",
+    "saved_physical_mic_id": None,
     "recordings_dir": str(APP_DIR / "recordings"),
     "ptt_enabled": False,
     "ptt_key": "v",

@@ -148,11 +148,38 @@ class DriverManager:
             print(f"[DriverManager] is_cable_output_default error: {e}")
         return False
 
+    _saved_physical_mic_id: Optional[str] = None
+
+    @classmethod
+    def get_current_default_recording_endpoint_id(cls) -> Optional[str]:
+        """Returns the current default recording device endpoint ID."""
+        try:
+            import pycaw.pycaw as pycaw
+            enumerator = pycaw.AudioUtilities.GetDeviceEnumerator()
+            cur_def = enumerator.GetDefaultAudioEndpoint(pycaw.EDataFlow.eCapture.value, pycaw.ERole.eConsole.value)
+            return cur_def.GetId()
+        except Exception as e:
+            print(f"[DriverManager] get_current_default_recording_endpoint_id error: {e}")
+            return None
+
     @classmethod
     def set_default_recording_device_to_cable(cls) -> bool:
         """Sets CABLE Output as the Windows default recording and communication device across all roles."""
         try:
             import pycaw.pycaw as pycaw
+            # Save the current default physical recording device before switching to CABLE
+            cur_id = cls.get_current_default_recording_endpoint_id()
+            if cur_id:
+                all_devs = {d.id: d.FriendlyName for d in pycaw.AudioUtilities.GetAllDevices()}
+                friendly = all_devs.get(cur_id, "").lower()
+                if "cable" not in friendly and "virtual" not in friendly and "voicemeeter" not in friendly:
+                    cls._saved_physical_mic_id = cur_id
+                    try:
+                        from core.config_manager import ConfigManager
+                        ConfigManager().set("saved_physical_mic_id", cur_id)
+                    except Exception:
+                        pass
+
             cable_id = cls.get_cable_capture_endpoint_id()
             if cable_id:
                 pycaw.AudioUtilities.SetDefaultDevice(
@@ -200,13 +227,31 @@ class DriverManager:
         """Restores physical microphone as the Windows default recording device across all roles."""
         try:
             import pycaw.pycaw as pycaw
-            phys_id = cls.get_physical_microphone_endpoint_id()
-            if phys_id:
+            enumerator = pycaw.AudioUtilities.GetDeviceEnumerator()
+            collection = enumerator.EnumAudioEndpoints(pycaw.EDataFlow.eCapture.value, pycaw.AudioDeviceState.Active.value)
+            count = collection.GetCount()
+            active_ids = {collection.Item(i).GetId() for i in range(count)}
+
+            target_id = cls._saved_physical_mic_id
+            if not target_id:
+                try:
+                    from core.config_manager import ConfigManager
+                    target_id = ConfigManager().get("saved_physical_mic_id")
+                except Exception:
+                    pass
+
+            if target_id and target_id not in active_ids:
+                target_id = None
+
+            if not target_id:
+                target_id = cls.get_physical_microphone_endpoint_id()
+
+            if target_id:
                 pycaw.AudioUtilities.SetDefaultDevice(
-                    phys_id,
+                    target_id,
                     roles=[pycaw.ERole.eConsole, pycaw.ERole.eMultimedia, pycaw.ERole.eCommunications]
                 )
-                print(f"[DriverManager] Restored physical microphone as default: {phys_id} (all roles)")
+                print(f"[DriverManager] Restored physical microphone as default: {target_id} (all roles)")
                 return True
         except Exception as e:
             print(f"[DriverManager] restore_physical_recording_device error: {e}")

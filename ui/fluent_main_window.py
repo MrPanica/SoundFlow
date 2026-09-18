@@ -221,6 +221,16 @@ class FluentMainWindow(FluentWindow):
         if self.engine.mic_input_device_id is not None:
             self.cfg.set("mic_input_device_id", self.engine.mic_input_device_id)
 
+        # Remember physical microphone endpoint ID if CABLE is not currently default
+        try:
+            if not DriverManager.is_cable_output_default():
+                cur_mic = DriverManager.get_current_default_recording_endpoint_id()
+                if cur_mic:
+                    self.cfg.set("saved_physical_mic_id", cur_mic)
+                    DriverManager._saved_physical_mic_id = cur_mic
+        except Exception:
+            pass
+
         # Initialize Auto-PTT, Voice Ducking, and Loudness Normalization from config
         if hasattr(self.engine, "ptt") and self.engine.ptt:
             self.engine.ptt.update_config(
@@ -480,6 +490,10 @@ class FluentMainWindow(FluentWindow):
             return False
         else:
             ok = DriverManager.set_default_recording_device_to_cable()
+            if self.engine.mic_target_device_id is None or self.engine.mic_target_stream is None or not self.engine.mic_target_stream.active:
+                cable_target = self.engine.get_default_devices().get("mic_target")
+                if cable_target is not None:
+                    self.set_global_target_microphone(cable_target)
             self.set_global_mic_enabled(True)
             self._sync_all_default_mic_buttons(True)
             self._check_driver_infobar()
@@ -884,10 +898,23 @@ class FluentMainWindow(FluentWindow):
         except Exception:
             pass
 
+        # Stop app capture and WinRT routing so routed apps are never stranded
+        try:
+            if hasattr(self, "app_stream_interface") and hasattr(self.app_stream_interface, "capture_manager"):
+                self.app_stream_interface.capture_manager.stop_capture()
+        except Exception:
+            pass
+        try:
+            from core.app_router import WindowsAppAudioRouter
+            WindowsAppAudioRouter().restore_all()
+        except Exception:
+            pass
+
         # Handle microphone on exit so voice never breaks in Discord / games
         mic_exit_behavior = self.cfg.get("exit_mic_behavior", "restore_default")
         if mic_exit_behavior in ("restore_default", "both"):
-            DriverManager.restore_physical_recording_device()
+            if DriverManager.is_cable_output_default():
+                DriverManager.restore_physical_recording_device()
         if mic_exit_behavior in ("repeater", "both") and DriverManager.is_driver_installed():
             DriverManager.start_mic_repeater(
                 mic_id=self.engine.mic_input_device_id,

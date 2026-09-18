@@ -180,19 +180,27 @@ class WindowsAppAudioRouter:
         if not self.is_available:
             return
 
-        if not self._routed_pids and not self._is_active:
-            return
+        if self._routed_pids:
+            print(f"[AppRouter] Restoring {len(self._routed_pids)} processes to default playback device...")
+            null_hstr = ctypes.c_void_p(None)
 
-        print(f"[AppRouter] Restoring {len(self._routed_pids)} processes to default playback device...")
-        null_hstr = ctypes.c_void_p(None)
+            for pid in list(self._routed_pids):
+                try:
+                    # Flow 0 = eRender; Roles: 0 = eConsole, 1 = eMultimedia, 2 = eCommunications
+                    self._set_persisted(self._factory, pid, 0, 1, null_hstr)
+                    self._set_persisted(self._factory, pid, 0, 0, null_hstr)
+                    self._set_persisted(self._factory, pid, 0, 2, null_hstr)
+                except Exception:
+                    pass
 
-        for pid in list(self._routed_pids):
+            self._routed_pids.clear()
+
+        # ClearAll guarantees no application remains persistently stuck on CABLE Input in Windows AudioPolicyConfig
+        if self._clear_all:
             try:
-                self._set_persisted(self._factory, pid, 0, 1, null_hstr)
-                self._set_persisted(self._factory, pid, 0, 0, null_hstr)
-            except Exception:
-                pass
+                self._clear_all(self._factory)
+            except Exception as e:
+                print(f"[AppRouter] ClearAll error: {e}")
 
-        self._routed_pids.clear()
         self._is_active = False
         print("[AppRouter] All processes restored to default playback device.")

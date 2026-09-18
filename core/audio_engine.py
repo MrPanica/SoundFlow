@@ -758,8 +758,13 @@ class AudioEngine:
 
             # 5. Mix Live Microphone Preview ("Hear Myself" in headphones)
             if self.mic_passthrough_enabled and self.mic_monitor_preview:
-                try:
-                    mic_chunk = self._mic_queue_monitor.get_nowait()
+                mic_chunk = None
+                while True:
+                    try:
+                        mic_chunk = self._mic_queue_monitor.get_nowait()
+                    except queue.Empty:
+                        break
+                if mic_chunk is not None:
                     chunk_len = len(mic_chunk)
                     if chunk_len == frames:
                         out += mic_chunk * self.mic_preview_volume
@@ -767,8 +772,6 @@ class AudioEngine:
                         out += mic_chunk[:frames] * self.mic_preview_volume
                     elif chunk_len > 0:
                         out[:chunk_len] += mic_chunk * self.mic_preview_volume
-                except queue.Empty:
-                    pass
 
         # Apply master monitor volume
         out *= self.master_monitor_volume
@@ -792,8 +795,13 @@ class AudioEngine:
 
             # 1. Microphone Passthrough + DSP Effects
             if self.mic_passthrough_enabled:
-                try:
-                    mic_chunk = self._mic_queue_target.get_nowait()
+                mic_chunk = None
+                while True:
+                    try:
+                        mic_chunk = self._mic_queue_target.get_nowait()
+                    except queue.Empty:
+                        break
+                if mic_chunk is not None:
                     chunk_len = len(mic_chunk)
                     if chunk_len == frames:
                         out += mic_chunk
@@ -801,8 +809,6 @@ class AudioEngine:
                         out += mic_chunk[:frames]
                     elif chunk_len > 0:
                         out[:chunk_len] += mic_chunk
-                except queue.Empty:
-                    pass
 
             # 2. Soundboard sounds (mic channel)
             finished_ids = []

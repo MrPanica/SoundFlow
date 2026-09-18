@@ -39,10 +39,16 @@ def emergency_crash_handler(exc_type, exc_value, exc_tb):
     except Exception:
         pass
 
-    # CRITICAL: Always restore physical microphone in Windows if an unhandled crash occurs
+    # CRITICAL: Always restore routed apps and physical microphone in Windows if an unhandled crash occurs
+    try:
+        from core.app_router import WindowsAppAudioRouter
+        WindowsAppAudioRouter().restore_all()
+    except Exception:
+        pass
     try:
         from core.driver_manager import DriverManager
-        DriverManager.restore_physical_recording_device()
+        if DriverManager.is_cable_output_default():
+            DriverManager.restore_physical_recording_device()
     except Exception:
         pass
 
@@ -51,8 +57,14 @@ sys.excepthook = emergency_crash_handler
 # Clean exit hook
 def on_app_exit():
     try:
+        from core.app_router import WindowsAppAudioRouter
+        WindowsAppAudioRouter().restore_all()
+    except Exception:
+        pass
+    try:
         from core.driver_manager import DriverManager
-        DriverManager.restore_physical_recording_device()
+        if DriverManager.is_cable_output_default():
+            DriverManager.restore_physical_recording_device()
     except Exception:
         pass
 
