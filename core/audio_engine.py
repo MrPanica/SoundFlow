@@ -823,7 +823,7 @@ class AudioEngine:
                     self.on_sound_state_changed(sid, False)
 
             # 3. App Audio Stream (mic channel)
-            if self.app_stream_enabled:
+            if self.app_stream_enabled and not getattr(self.app_capture, "is_routed_to_cable", False):
                 app_chunk = self.app_capture.get_chunk_mic()
                 if app_chunk is not None:
                     chunk_len = len(app_chunk)

@@ -115,15 +115,31 @@ class MultiSelectAppMenu(RoundMenu):
     titles and checkmarks are clearly visible from the very first opening and upon reopenings.
     """
 
-    def __init__(self, target_width: int = 600, parent=None):
+    def __init__(self, target_width: int = 620, parent=None):
         super().__init__(parent=parent)
-        self.target_width = max(target_width, 600)
+        self.target_width = max(target_width, 620)
         self.view.setItemDelegate(AppMenuItemDelegate(self.view))
         self.view.setObjectName("multiSelectAppMenu")
         self.view.setMaxVisibleItems(14)
         m = self.layout().contentsMargins()
         self.view_width = self.target_width - m.left() - m.right()
+        self.view.setMinimumWidth(self.view_width)
         self.view.setFixedWidth(self.view_width)
+        self.setMinimumWidth(self.target_width)
+        self.setFixedWidth(self.target_width)
+
+        # Lock view.adjustSize so that animation manager or item updates never shrink the menu
+        orig_view_adjust = self.view.adjustSize
+        def custom_view_adjust(pos=None, aniType=MenuAnimationType.NONE):
+            orig_view_adjust(pos, aniType)
+            self.view.setFixedWidth(self.view_width)
+            self.setFixedWidth(self.target_width)
+        self.view.adjustSize = custom_view_adjust
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.view.setFixedWidth(self.view_width)
+        self.setFixedWidth(self.target_width)
 
     def _adjustItemText(self, item: QListWidgetItem, action: QAction):
         w = self.view_width - 8
@@ -173,6 +189,7 @@ class FluentAppStreamInterface(QWidget):
 
         # Application processes & selection state
         self._audio_apps: List[Dict[str, Any]] = []
+        self._selected_names: Set[str] = set()
         self._selected_pids: Set[int] = set()
         self._is_system_mix: bool = True
         self._icon_cache: Dict[str, QIcon] = {}
@@ -415,7 +432,7 @@ class FluentAppStreamInterface(QWidget):
 
     def _show_apps_menu(self):
         """Builds and displays the MultiSelectAppMenu directly beneath the dropdown button."""
-        target_w = max(self.btn_select_apps.width(), 600)
+        target_w = max(self.btn_select_apps.width(), 620)
         self.menu_apps = MultiSelectAppMenu(target_width=target_w, parent=self)
 
         # 1. System Mix Action
@@ -440,16 +457,24 @@ class FluentAppStreamInterface(QWidget):
 
         # 3. Application Items
         for app in self._audio_apps:
-            pid = app["pid"]
+            name_key = app["name"].lower()
             ic = app.get("icon")
             if not ic or (isinstance(ic, QIcon) and ic.isNull()):
                 ic = FluentIcon.APPLICATION
 
-            label = f"{app['name']} (PID: {pid})"
+            disp = app.get("display_name", app["name"])
+            has_sess = app.get("has_session", False)
+            sess_badge = " 🔊" if has_sess else ""
+            if disp.lower() != name_key:
+                label = f"{disp} ({app['name']}){sess_badge}"
+            else:
+                label = f"{app['name']} (PID: {app['pid']}){sess_badge}"
+
             act_app = Action(ic, label, self.menu_apps)
             act_app.setCheckable(True)
-            act_app.setChecked(pid in self._selected_pids)
-            act_app.triggered.connect(lambda chk, p=pid: self._on_app_toggled(p, chk))
+            is_checked = (name_key in self._selected_names) or (app["pid"] in self._selected_pids)
+            act_app.setChecked(is_checked)
+            act_app.triggered.connect(lambda chk, a=app: self._on_app_item_toggled(a, chk))
             self.menu_apps.addAction(act_app)
 
         self.menu_apps.addSeparator()
@@ -469,32 +494,40 @@ class FluentAppStreamInterface(QWidget):
     def _on_mix_toggled(self, checked: bool):
         if checked:
             self._is_system_mix = True
+            self._selected_names.clear()
             self._selected_pids.clear()
         else:
-            if not self._selected_pids:
+            if not self._selected_names and not self._selected_pids:
                 self._is_system_mix = True
         self._update_selection_state()
 
-    def _on_app_toggled(self, pid: int, checked: bool):
+    def _on_app_item_toggled(self, app: Dict[str, Any], checked: bool):
+        name_key = app["name"].lower()
+        pid = app["pid"]
+        pids = app.get("pids", [pid])
         if checked:
-            self._selected_pids.add(pid)
+            self._selected_names.add(name_key)
+            self._selected_pids.update(pids)
             self._is_system_mix = False
         else:
-            self._selected_pids.discard(pid)
-            if not self._selected_pids:
+            self._selected_names.discard(name_key)
+            self._selected_pids.difference_update(pids)
+            if not self._selected_names and not self._selected_pids:
                 self._is_system_mix = True
         self._update_selection_state()
 
     def _on_select_all(self):
         self._is_system_mix = False
         for app in self._audio_apps:
-            self._selected_pids.add(app["pid"])
+            self._selected_names.add(app["name"].lower())
+            self._selected_pids.update(app.get("pids", [app["pid"]]))
         self._update_selection_state()
         if self.menu_apps:
             self.menu_apps.view.viewport().update()
 
     def _on_clear_all(self):
         self._is_system_mix = True
+        self._selected_names.clear()
         self._selected_pids.clear()
         self._update_selection_state()
         if self.menu_apps:
@@ -502,36 +535,55 @@ class FluentAppStreamInterface(QWidget):
 
     def _update_selection_state(self):
         """Updates the dropdown header button text, icon, and active engine targets."""
-        if self._is_system_mix or not self._selected_pids:
+        if self._is_system_mix or (not self._selected_names and not self._selected_pids):
             self.btn_select_apps.setAppIcon(FluentIcon.SPEAKERS)
             self.btn_select_apps.setText(tr("app_stream_all_system_mix", "Все системные звуки (микс ПК)"))
             self.engine.app_capture.target_pids = []
             self.engine.app_capture.target_app_names = []
         else:
-            selected_apps = [a for a in self._audio_apps if a["pid"] in self._selected_pids]
+            selected_apps = [
+                a for a in self._audio_apps
+                if a["name"].lower() in self._selected_names or a["pid"] in self._selected_pids
+            ]
             count = len(selected_apps)
+            if count == 0:
+                self.btn_select_apps.setAppIcon(FluentIcon.SPEAKERS)
+                self.btn_select_apps.setText(tr("app_stream_all_system_mix", "Все системные звуки (микс ПК)"))
+                self.engine.app_capture.target_pids = []
+                self.engine.app_capture.target_app_names = []
+                return
+
+            all_pids: List[int] = []
+            for a in selected_apps:
+                all_pids.extend(a.get("pids", [a["pid"]]))
+            all_names = [a["name"] for a in selected_apps]
+
+            self.engine.app_capture.target_pids = list(set(all_pids))
+            self.engine.app_capture.target_app_names = all_names
+
             if count == 1:
                 app = selected_apps[0]
                 ic = app.get("icon")
                 self.btn_select_apps.setAppIcon(ic if ic else FluentIcon.APPLICATION)
-                self.btn_select_apps.setText(f"{app['name']} (PID: {app['pid']})")
-                self.engine.app_capture.target_pids = [app["pid"]]
-                self.engine.app_capture.target_app_names = [app["name"]]
+                disp = app.get("display_name", app["name"])
+                if disp.lower() != app["name"].lower():
+                    self.btn_select_apps.setText(f"{disp} ({app['name']})")
+                else:
+                    self.btn_select_apps.setText(f"{app['name']} (PID: {app['pid']})")
             elif count == 2:
                 ic = selected_apps[0].get("icon")
                 self.btn_select_apps.setAppIcon(ic if ic else FluentIcon.APPLICATION)
-                self.btn_select_apps.setText(f"{selected_apps[0]['name']}, {selected_apps[1]['name']}")
-                self.engine.app_capture.target_pids = [a["pid"] for a in selected_apps]
-                self.engine.app_capture.target_app_names = [a["name"] for a in selected_apps]
+                d1 = selected_apps[0].get("display_name", selected_apps[0]["name"])
+                d2 = selected_apps[1].get("display_name", selected_apps[1]["name"])
+                self.btn_select_apps.setText(f"{d1}, {d2}")
             else:
                 ic = selected_apps[0].get("icon")
                 self.btn_select_apps.setAppIcon(ic if ic else FluentIcon.APPLICATION)
-                names_preview = f"{selected_apps[0]['name']}, {selected_apps[1]['name']}"
+                d1 = selected_apps[0].get("display_name", selected_apps[0]["name"])
+                d2 = selected_apps[1].get("display_name", selected_apps[1]["name"])
                 self.btn_select_apps.setText(
-                    tr("app_stream_multi_selected", count=count, names=f"{names_preview} (+{count - 2})")
+                    tr("app_stream_multi_selected", count=count, names=f"{d1}, {d2} (+{count - 2})")
                 )
-                self.engine.app_capture.target_pids = [a["pid"] for a in selected_apps]
-                self.engine.app_capture.target_app_names = [a["name"] for a in selected_apps]
 
     def _on_mon_switch_changed(self, checked: bool):
         """Handles headphones monitor toggle (OFF = Mute for self only)."""
@@ -562,15 +614,18 @@ class FluentAppStreamInterface(QWidget):
         if checked:
             vol = self.slider_mic.value()
             self.engine.app_stream_mic_vol = vol / 100.0
+            self.engine.app_capture.set_target_volume(vol / 100.0, muted=False)
             self.lbl_mic.setText(tr("app_stream_mic_vol_label", vol=vol))
         else:
             self.engine.app_stream_mic_vol = 0.0
+            self.engine.app_capture.set_target_volume(0.0, muted=True)
             self.lbl_mic.setText(tr("app_stream_mic_disabled", "Отключено (звук не идет в микрофон)"))
 
     def _on_mic_vol(self, val: int):
         self.cfg.set("app_stream_mic_vol", val / 100.0)
         if self.switch_mic.isChecked():
             self.engine.app_stream_mic_vol = val / 100.0
+            self.engine.app_capture.set_target_volume(val / 100.0, muted=False)
             self.lbl_mic.setText(tr("app_stream_mic_vol_label", vol=val))
 
     def _open_windows_mixer(self):
@@ -583,52 +638,40 @@ class FluentAppStreamInterface(QWidget):
     def refresh_process_list(self):
         """Scans for active sound-producing processes in Windows and extracts their icons."""
         icon_provider = QFileIconProvider()
-        cur_pid = os.getpid()
-        ignored = {"svchost.exe", "audiodg.exe", "conhost.exe", "dwm.exe", "system", "registry"}
-
         self._audio_apps = []
-        seen_names = set()
-        seen_pids = {cur_pid}
 
         audio_sessions = AppCaptureManager.list_audio_sessions()
         for s in audio_sessions:
-            pid = s.get("pid")
             name = s.get("name", "")
-            if not name or pid in seen_pids or name.lower() in ignored:
-                continue
-
-            if name.lower() in seen_names:
-                continue
-
-            seen_pids.add(pid)
-            seen_names.add(name.lower())
-
-            exe_path = ""
-            try:
-                proc = psutil.Process(pid)
-                exe_path = proc.exe()
-            except Exception:
-                pass
+            pid = s.get("pid")
+            exe_path = s.get("exe", "")
+            disp = s.get("display_name", name)
+            pids = s.get("pids", [pid])
+            has_sess = s.get("has_session", False)
 
             icon = None
             if exe_path in self._icon_cache:
                 icon = self._icon_cache[exe_path]
             elif exe_path and os.path.exists(exe_path):
-                ic = icon_provider.icon(QFileInfo(exe_path))
-                if ic and not ic.isNull():
-                    icon = ic
-                    self._icon_cache[exe_path] = icon
+                try:
+                    ic = icon_provider.icon(QFileInfo(exe_path))
+                    if ic and not ic.isNull():
+                        icon = ic
+                        self._icon_cache[exe_path] = icon
+                except Exception:
+                    pass
 
             if not icon:
                 icon = FluentIcon.APPLICATION
 
-            label = f"{name} (PID: {pid})"
             self._audio_apps.append({
-                "label": label,
                 "name": name,
+                "display_name": disp,
                 "pid": pid,
+                "pids": pids,
                 "exe": exe_path,
-                "icon": icon
+                "icon": icon,
+                "has_session": has_sess
             })
 
         self._update_selection_state()
@@ -644,16 +687,14 @@ class FluentAppStreamInterface(QWidget):
         self.is_streaming = True
         self.engine.app_stream_enabled = True
 
-        if self._is_system_mix or not self._selected_pids:
-            self.engine.app_capture.target_pids = []
-            self.engine.app_capture.target_app_names = []
-        else:
-            selected_apps = [a for a in self._audio_apps if a["pid"] in self._selected_pids]
-            self.engine.app_capture.target_pids = [a["pid"] for a in selected_apps]
-            self.engine.app_capture.target_app_names = [a["name"] for a in selected_apps]
-
+        self._update_selection_state()
         self.engine.app_capture.mute_self = not self.switch_mon.isChecked()
         self.engine.app_capture.start_capture()
+
+        if self.switch_mic.isChecked():
+            self.engine.app_capture.set_target_volume(self.slider_mic.value() / 100.0, muted=False)
+        else:
+            self.engine.app_capture.set_target_volume(0.0, muted=True)
 
         self.btn_stream.setText(tr("app_stream_btn_stop", "Остановить трансляцию (В эфире)"))
         self.btn_stream.setIcon(FluentIcon.PAUSE)
@@ -664,8 +705,6 @@ class FluentAppStreamInterface(QWidget):
         try:
             self.is_streaming = False
             self.engine.app_stream_enabled = False
-            self.engine.app_capture.target_pids = []
-            self.engine.app_capture.target_app_names = []
             self.engine.app_capture.stop_capture()
             if hasattr(self, "vu_app"):
                 self.vu_app.reset()

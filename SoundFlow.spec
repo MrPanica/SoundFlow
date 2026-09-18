@@ -9,6 +9,8 @@ hiddenimports = [
     'core.i18n',
     'core.mic_repeater',
     'core.ptt_controller',
+    'core.app_router',
+    'core.app_capture',
     'imageio_ffmpeg',
     'yt_dlp',
     'edge_tts',
