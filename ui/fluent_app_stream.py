@@ -98,11 +98,11 @@ class AppMenuItemDelegate(ShortcutMenuItemDelegate):
             painter.save()
             painter.setRenderHints(QPainter.RenderHint.Antialiasing)
             if not (option.state & QStyle.StateFlag.State_MouseOver):
-                painter.setOpacity(0.85)
+                painter.setOpacity(0.9)
 
             s = 14
-            x = option.rect.right() - 24
-            y = option.rect.center().y() - s / 2
+            x = option.rect.right() - 28
+            y = int(option.rect.center().y() - s / 2)
             FluentIcon.ACCEPT.render(painter, QRectF(x, y, s, s))
             painter.restore()
 
@@ -111,17 +111,21 @@ class MultiSelectAppMenu(RoundMenu):
     """
     Custom RoundMenu for selecting multiple applications.
     Checkable items do not close the menu when clicked, enabling seamless multi-selection.
+    Always maintains a wide, comfortable width so application titles and checkmarks are clearly visible.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, min_width: int = 560, parent=None):
         super().__init__(parent=parent)
+        self._min_width = max(min_width, 560)
         self.view.setItemDelegate(AppMenuItemDelegate(self.view))
         self.view.setObjectName("multiSelectAppMenu")
         self.view.setMaxVisibleItems(14)
+        self.view.setMinimumWidth(self._min_width)
 
     def _adjustItemText(self, item: QListWidgetItem, action: QAction):
         w = super()._adjustItemText(item, action)
-        item.setSizeHint(QSize(w + 36, self.itemHeight))
+        w = max(w + 48, self._min_width - 24)
+        item.setSizeHint(QSize(w, self.itemHeight))
         return w
 
     def _onItemClicked(self, item):
@@ -257,7 +261,7 @@ class FluentAppStreamInterface(QWidget):
         icon_mon = IconWidget(FluentIcon.VOLUME, card_vol)
         icon_mon.setFixedSize(16, 16)
         mon_header.addWidget(icon_mon)
-        lbl_mon_head = BodyLabel(tr("app_stream_hear_myself", "Слышать самому"), card_vol)
+        lbl_mon_head = BodyLabel(tr("app_stream_hear_myself", "Прослушивание в наушниках"), card_vol)
         lbl_mon_head.setStyleSheet("font-weight: 600; font-size: 13px;")
         mon_header.addWidget(lbl_mon_head)
         mon_header.addStretch()
@@ -274,7 +278,7 @@ class FluentAppStreamInterface(QWidget):
         mon_col.addLayout(mon_header)
 
         lbl_mon_hint = CaptionLabel(
-            tr("app_stream_mon_hint", "Воспроизводить захваченный звук в ваших динамиках / наушниках"),
+            tr("app_stream_mon_hint", "Воспроизводить захваченный звук в ваших динамиках / наушниках (оставьте выключенным, если звук уже слышен)"),
             card_vol
         )
         lbl_mon_hint.setStyleSheet("color: rgba(255, 255, 255, 0.55);")
@@ -283,7 +287,7 @@ class FluentAppStreamInterface(QWidget):
         init_mon_vol = int(self.cfg.get("app_stream_monitor_vol", 0.0) * 100)
         self.engine.app_stream_monitor_vol = (init_mon_vol / 100.0) if mon_init_state else 0.0
         self.lbl_mon = CaptionLabel(
-            tr("app_stream_mon_vol", vol=init_mon_vol) if mon_init_state else tr("app_stream_mon_disabled", "Отключено (заглушено у себя, звук идет только тиммейтам)"),
+            tr("app_stream_mon_vol", vol=init_mon_vol) if mon_init_state else tr("app_stream_mon_disabled", "Отключено (звук идет только в микрофон тиммейтам)"),
             card_vol
         )
         mon_col.addWidget(self.lbl_mon)
@@ -393,7 +397,9 @@ class FluentAppStreamInterface(QWidget):
 
     def _show_apps_menu(self):
         """Builds and displays the MultiSelectAppMenu directly beneath the dropdown button."""
-        self.menu_apps = MultiSelectAppMenu(parent=self)
+        btn_w = self.btn_select_apps.width()
+        menu_w = max(btn_w, 560)
+        self.menu_apps = MultiSelectAppMenu(min_width=menu_w, parent=self)
 
         # 1. System Mix Action
         act_mix = Action(FluentIcon.SPEAKERS, tr("app_stream_all_system_mix", "Все системные звуки (микс ПК)"), self.menu_apps)
@@ -435,9 +441,13 @@ class FluentAppStreamInterface(QWidget):
         act_done = Action(FluentIcon.ACCEPT, tr("app_stream_apply_close", "✓ Готово (закрыть список)"), self.menu_apps)
         self.menu_apps.addAction(act_done)
 
+        # Ensure menu layout is sized to full target width
+        self.menu_apps.view.setMinimumWidth(menu_w)
+        self.menu_apps.view.adjustSize()
+        self.menu_apps.adjustSize()
+
         # Anchor menu nicely beneath the button
         pos = self.btn_select_apps.mapToGlobal(QPoint(0, self.btn_select_apps.height() + 4))
-        self.menu_apps.view.setMinimumWidth(max(self.btn_select_apps.width(), 420))
         self.menu_apps.exec(pos, aniType=MenuAnimationType.DROP_DOWN)
 
     def _on_mix_toggled(self, checked: bool):
@@ -508,7 +518,7 @@ class FluentAppStreamInterface(QWidget):
                 self.engine.app_capture.target_app_names = [a["name"] for a in selected_apps]
 
     def _on_mon_switch_changed(self, checked: bool):
-        """Handles 'Слышать самому' toggle (OFF = Mute for self only)."""
+        """Handles headphones monitor toggle (OFF = Mute for self only)."""
         self.cfg.set("app_stream_monitor_enabled", checked)
         self.engine.app_capture.mute_self = not checked
         self.slider_mon.setEnabled(checked)
@@ -519,7 +529,7 @@ class FluentAppStreamInterface(QWidget):
             self.lbl_mon.setText(tr("app_stream_mon_vol", vol=vol))
         else:
             self.engine.app_stream_monitor_vol = 0.0
-            self.lbl_mon.setText(tr("app_stream_mon_disabled", "Отключено (заглушено у себя, звук идет только тиммейтам)"))
+            self.lbl_mon.setText(tr("app_stream_mon_disabled", "Отключено (звук идет только в микрофон тиммейтам)"))
 
     def _on_mon_vol(self, val: int):
         self.cfg.set("app_stream_monitor_vol", val / 100.0)

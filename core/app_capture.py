@@ -6,12 +6,13 @@ Uses pycaw to detect audio-producing applications and PyAudioWPatch for high-per
 import threading
 import queue
 import time
-from typing import List, Dict, Any, Optional
+import ctypes
+from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 import pyaudiowpatch as pyaudio
 
 try:
-    from pycaw.pycaw import AudioUtilities
+    from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
     PYCAW_AVAILABLE = True
 except Exception as e:
     PYCAW_AVAILABLE = False
@@ -36,8 +37,14 @@ class AppCaptureManager:
         self.mic_volume = 1.0
         self.target_pids: List[int] = []
         self.target_app_names: List[str] = []
-        self.mute_self: bool = False
+        self.mute_self: bool = True
         self.current_peak: float = 0.0
+
+        # Smart Process Gate (isolates target processes, prevents game audio leakage)
+        self._target_meters: List[Any] = []
+        self._last_meter_refresh: float = 0.0
+        self._gate_hold_until: float = 0.0
+        self._current_gate_gain: float = 1.0
 
     @property
     def target_pid(self) -> Optional[int]:
@@ -131,37 +138,99 @@ class AppCaptureManager:
                 except queue.Empty:
                     break
 
+    def _check_target_processes_active(self) -> Tuple[bool, float]:
+        """
+        Checks if any of the targeted process IDs are actively emitting sound via pycaw session meters.
+        Returns (is_active, peak_level).
+        """
+        if not self.target_pids:
+            return True, 1.0
+
+        now = time.time()
+        # Refresh session meter interface list periodically or if empty
+        if now - self._last_meter_refresh > 1.2 or not self._target_meters:
+            self._target_meters = []
+            try:
+                sessions = AudioUtilities.GetAllSessions()
+                target_set = set(self.target_pids)
+                for s in sessions:
+                    if s.Process and s.Process.pid in target_set:
+                        try:
+                            meter = s._ctl.QueryInterface(IAudioMeterInformation)
+                            self._target_meters.append(meter)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            self._last_meter_refresh = now
+
+        max_peak = 0.0
+        for meter in self._target_meters:
+            try:
+                v = meter.GetPeakValue()
+                if v > max_peak:
+                    max_peak = v
+            except Exception:
+                pass
+
+        # Target app active if peak > 0.0005 (-66 dB)
+        is_active = (max_peak > 0.0005)
+        if is_active:
+            self._gate_hold_until = now + 0.18  # 180ms hold hangover
+            return True, max_peak
+        elif now < self._gate_hold_until:
+            return True, max_peak
+
+        return False, 0.0
+
     def _capture_worker(self, device_index: Optional[int]):
         pa = None
         stream = None
+        com_inited = False
         try:
+            try:
+                ctypes.windll.ole32.CoInitialize(None)
+                com_inited = True
+            except Exception:
+                pass
+
             pa = pyaudio.PyAudio()
 
             # Find WASAPI loopback device
             loopback_dev = None
             if device_index is not None:
                 loopback_dev = pa.get_device_info_by_index(device_index)
-            elif self.mute_self:
-                # When "Mute for self only" is active, prioritize Virtual Audio Cable loopback
-                # so the app plays into CABLE Input (silent in headphones) and is captured here
-                for i in range(pa.get_device_count()):
-                    dev = pa.get_device_info_by_index(i)
-                    if dev.get("isLoopbackDevice", False):
-                        name_low = dev.get("name", "").lower()
-                        if "cable input" in name_low or "cable in" in name_low or "virtual" in name_low:
-                            loopback_dev = dev
-                            break
-
-            if not loopback_dev:
+            else:
+                # Prioritize default physical playback loopback (Speakers/Headphones).
+                # NEVER pick CABLE Input or any virtual cable as loopback source,
+                # because SoundFlow streams into CABLE Input — capturing it creates an infinite feedback echo!
                 try:
-                    loopback_dev = pa.get_default_wasapi_loopback()
+                    def_lb = pa.get_default_wasapi_loopback()
+                    name_low = def_lb.get("name", "").lower()
+                    if "cable" not in name_low and "virtual" not in name_low and "voicemeeter" not in name_low:
+                        loopback_dev = def_lb
                 except Exception:
-                    # Fallback: search for first device with isLoopbackDevice = True
+                    pass
+
+                if not loopback_dev:
                     for i in range(pa.get_device_count()):
                         dev = pa.get_device_info_by_index(i)
                         if dev.get("isLoopbackDevice", False):
-                            loopback_dev = dev
-                            break
+                            name_low = dev.get("name", "").lower()
+                            if "cable" not in name_low and "virtual" not in name_low and "voicemeeter" not in name_low:
+                                loopback_dev = dev
+                                break
+
+                # Fallback to any loopback device only if no physical device exists
+                if not loopback_dev:
+                    try:
+                        loopback_dev = pa.get_default_wasapi_loopback()
+                    except Exception:
+                        for i in range(pa.get_device_count()):
+                            dev = pa.get_device_info_by_index(i)
+                            if dev.get("isLoopbackDevice", False):
+                                loopback_dev = dev
+                                break
 
             if not loopback_dev:
                 print("[AppCapture] No WASAPI Loopback device found.")
@@ -204,16 +273,36 @@ class AppCaptureManager:
                             resampled[:, 1] = np.interp(target_indices, orig_indices, audio_data[:, 1])
                             audio_data = resampled
 
-                    if len(audio_data) > 0:
-                        self.current_peak = float(np.max(np.abs(audio_data)))
+                    # Apply Smart Process Gate:
+                    # If specific target PIDs are selected (e.g. Browser), ensure that when the target
+                    # app is silent, no background game audio or system sound leaks into the microphone!
+                    target_active = True
+                    target_pk = 0.0
+                    if self.target_pids:
+                        target_active, target_pk = self._check_target_processes_active()
 
-                    # Mic queue receives captured audio
+                    # Smooth gate transition (prevents clicks)
+                    target_gain = 1.0 if target_active else 0.0
+                    alpha = 0.35 if target_gain > self._current_gate_gain else 0.08
+                    self._current_gate_gain += (target_gain - self._current_gate_gain) * alpha
+                    if self._current_gate_gain < 0.005:
+                        self._current_gate_gain = 0.0
+
+                    if self.target_pids and self._current_gate_gain == 0.0:
+                        mic_audio = np.zeros_like(audio_data)
+                        self.current_peak = 0.0
+                    else:
+                        mic_audio = audio_data * self._current_gate_gain
+                        raw_peak = float(np.max(np.abs(mic_audio))) if len(mic_audio) > 0 else 0.0
+                        self.current_peak = target_pk if (self.target_pids and target_pk > 0.0) else raw_peak
+
+                    # Mic queue receives gated audio for streaming to microphone
                     if self.queue_mic.full():
                         try:
                             self.queue_mic.get_nowait()
                         except queue.Empty:
                             pass
-                    self.queue_mic.put_nowait(audio_data)
+                    self.queue_mic.put_nowait(mic_audio)
 
                     # Monitor queue: if mute_self is enabled, local monitor is complete silence (0.0)
                     if self.queue_monitor.full():
@@ -221,10 +310,10 @@ class AppCaptureManager:
                             self.queue_monitor.get_nowait()
                         except queue.Empty:
                             pass
-                    if self.mute_self:
+                    if self.mute_self or (self.target_pids and self._current_gate_gain == 0.0):
                         self.queue_monitor.put_nowait(np.zeros_like(audio_data))
                     else:
-                        self.queue_monitor.put_nowait(audio_data)
+                        self.queue_monitor.put_nowait(mic_audio)
 
                 except Exception as ex:
                     if self._stop_event.is_set():
@@ -243,6 +332,11 @@ class AppCaptureManager:
             if pa:
                 try:
                     pa.terminate()
+                except Exception:
+                    pass
+            if com_inited:
+                try:
+                    ctypes.windll.ole32.CoUninitialize()
                 except Exception:
                     pass
             self.is_capturing = False

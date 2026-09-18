@@ -996,6 +996,8 @@ class AudioEngine:
             self.ptt.force_release()
         self.radio.stop()
         self.app_stream_enabled = False
+        if hasattr(self, "app_capture") and getattr(self.app_capture, "is_capturing", False):
+            self.app_capture.stop_capture()
 
     def stop_tts(self):
         """Immediately stops any ongoing TTS speech playback."""
