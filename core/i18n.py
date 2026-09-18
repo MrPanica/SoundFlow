@@ -118,6 +118,15 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "app_stream_vol_title": "Громкость трансляции приложения",
         "app_stream_vol_monitor": "Слышать самому (Наушники):",
         "app_stream_vol_mic": "Громкость в игре / Discord (Микрофон):",
+        "app_stream_select_btn_text": "Выберите приложения для трансляции...",
+        "app_stream_multi_selected": "Выбрано {count} прилож.: {names}",
+        "app_stream_select_all": "Выбрать все",
+        "app_stream_clear_all": "Снять выбор",
+        "app_stream_mute_self_label": "🔇 Заглушить только у себя (трансляция без звука в наушниках)",
+        "app_stream_mute_self_desc": "Звук выбранных приложений пойдет напрямую в микрофон тиммейтам, а в ваших наушниках будет полная тишина.",
+        "app_stream_open_mixer_btn": "⚙️ Открыть микшер Windows (направить вывод на CABLE Input)",
+        "app_stream_open_mixer_tip": "В открывшемся окне Windows выберите CABLE Input в качестве устройства вывода для выбранных приложений.",
+        "app_stream_vol_monitor_tip": "Слышать в наушниках (0% = без эха, звук идет напрямую из Windows):",
 
         # Voice FX
         "voice_fx_title": "Микрофон и Voice Changer (FX)",
@@ -746,6 +755,15 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "app_stream_vol_title": "Application Stream Volume",
         "app_stream_vol_monitor": "Hear Myself (Headphones):",
         "app_stream_vol_mic": "Game / Discord Volume (Microphone):",
+        "app_stream_select_btn_text": "Select applications to stream...",
+        "app_stream_multi_selected": "Selected {count} apps: {names}",
+        "app_stream_select_all": "Select All",
+        "app_stream_clear_all": "Deselect All",
+        "app_stream_mute_self_label": "🔇 Mute for self only (broadcast without headphone audio)",
+        "app_stream_mute_self_desc": "App audio streams directly into teammates' microphone, staying completely silent in your headphones.",
+        "app_stream_open_mixer_btn": "⚙️ Open Windows Mixer (route app output to CABLE Input)",
+        "app_stream_open_mixer_tip": "In Windows Settings, set the output device of your selected applications to CABLE Input.",
+        "app_stream_vol_monitor_tip": "Hear in headphones (0% = no echo, audio plays directly from Windows):",
 
         # Voice FX
         "voice_fx_title": "Microphone & Voice Changer (FX)",

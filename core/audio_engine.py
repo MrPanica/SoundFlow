@@ -153,7 +153,7 @@ class AudioEngine:
         self.master_mic_volume = 1.0
         self.soundboard_monitor_vol = 1.0
         self.soundboard_mic_vol = 1.0
-        self.app_stream_monitor_vol = 0.8
+        self.app_stream_monitor_vol = 0.0  # 0.0 by default eliminates duplicate audio echo
         self.app_stream_mic_vol = 1.0
         self.radio_monitor_vol = 0.7
         self.radio_mic_vol = 0.9
@@ -209,6 +209,10 @@ class AudioEngine:
 
         # Auto Push-to-Talk (PTT)
         self.ptt = PTTController()
+
+    @property
+    def app_stream_peak(self) -> float:
+        return getattr(self.app_capture, "current_peak", 0.0)
 
     @property
     def radio_monitor_enabled(self) -> bool:
@@ -716,7 +720,8 @@ class AudioEngine:
                     self.on_sound_state_changed(sid, False)
 
             # 2. Mix App Audio Capture (monitor channel)
-            if self.app_stream_enabled:
+            # Only mix into headphones if monitor volume is explicitly raised > 0 AND mute_self is false
+            if self.app_stream_enabled and self.app_stream_monitor_vol > 0.001 and not getattr(self.app_capture, "mute_self", False):
                 app_chunk = self.app_capture.get_chunk_monitor()
                 if app_chunk is not None:
                     chunk_len = len(app_chunk)

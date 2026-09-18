@@ -34,9 +34,32 @@ class AppCaptureManager:
         self.is_streaming_to_mic = False
         self.monitor_volume = 0.8
         self.mic_volume = 1.0
-        self.target_pid: Optional[int] = None
-        self.target_app_name: Optional[str] = None
+        self.target_pids: List[int] = []
+        self.target_app_names: List[str] = []
+        self.mute_self: bool = False
         self.current_peak: float = 0.0
+
+    @property
+    def target_pid(self) -> Optional[int]:
+        return self.target_pids[0] if self.target_pids else None
+
+    @target_pid.setter
+    def target_pid(self, val: Optional[int]):
+        if val is None:
+            self.target_pids = []
+        else:
+            self.target_pids = [val]
+
+    @property
+    def target_app_name(self) -> Optional[str]:
+        return ", ".join(self.target_app_names) if self.target_app_names else None
+
+    @target_app_name.setter
+    def target_app_name(self, val: Optional[str]):
+        if val is None:
+            self.target_app_names = []
+        else:
+            self.target_app_names = [val]
 
     @staticmethod
     def list_audio_sessions() -> List[Dict[str, Any]]:
@@ -100,12 +123,13 @@ class AppCaptureManager:
             self._capture_thread.join(timeout=1.0)
         self._capture_thread = None
 
-        # Empty the queue
-        while not self.audio_queue.empty():
-            try:
-                self.audio_queue.get_nowait()
-            except queue.Empty:
-                break
+        # Safely empty both monitor and mic queues without crashing
+        for q in (self.queue_monitor, self.queue_mic):
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
 
     def _capture_worker(self, device_index: Optional[int]):
         pa = None
@@ -113,11 +137,22 @@ class AppCaptureManager:
         try:
             pa = pyaudio.PyAudio()
 
-            # Find default WASAPI loopback device if not explicitly provided
+            # Find WASAPI loopback device
             loopback_dev = None
             if device_index is not None:
                 loopback_dev = pa.get_device_info_by_index(device_index)
-            else:
+            elif self.mute_self:
+                # When "Mute for self only" is active, prioritize Virtual Audio Cable loopback
+                # so the app plays into CABLE Input (silent in headphones) and is captured here
+                for i in range(pa.get_device_count()):
+                    dev = pa.get_device_info_by_index(i)
+                    if dev.get("isLoopbackDevice", False):
+                        name_low = dev.get("name", "").lower()
+                        if "cable input" in name_low or "cable in" in name_low or "virtual" in name_low:
+                            loopback_dev = dev
+                            break
+
+            if not loopback_dev:
                 try:
                     loopback_dev = pa.get_default_wasapi_loopback()
                 except Exception:
@@ -172,14 +207,24 @@ class AppCaptureManager:
                     if len(audio_data) > 0:
                         self.current_peak = float(np.max(np.abs(audio_data)))
 
-                    # Push to both queues with drop if full
-                    for q in (self.queue_monitor, self.queue_mic):
-                        if q.full():
-                            try:
-                                q.get_nowait()
-                            except queue.Empty:
-                                pass
-                        q.put_nowait(audio_data)
+                    # Mic queue receives captured audio
+                    if self.queue_mic.full():
+                        try:
+                            self.queue_mic.get_nowait()
+                        except queue.Empty:
+                            pass
+                    self.queue_mic.put_nowait(audio_data)
+
+                    # Monitor queue: if mute_self is enabled, local monitor is complete silence (0.0)
+                    if self.queue_monitor.full():
+                        try:
+                            self.queue_monitor.get_nowait()
+                        except queue.Empty:
+                            pass
+                    if self.mute_self:
+                        self.queue_monitor.put_nowait(np.zeros_like(audio_data))
+                    else:
+                        self.queue_monitor.put_nowait(audio_data)
 
                 except Exception as ex:
                     if self._stop_event.is_set():

@@ -48,6 +48,14 @@ class VUMeterWidget(QWidget):
         self.peak_right = max(self.right_level, self.peak_right * 0.92)
         self.update()
 
+    def reset(self):
+        """Resets all meter levels and peaks to zero."""
+        self.left_level = 0.0
+        self.right_level = 0.0
+        self.peak_left = 0.0
+        self.peak_right = 0.0
+        self.update()
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
