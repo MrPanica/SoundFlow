@@ -28,7 +28,7 @@
 
 **SoundFlow Studio** is an advanced, high-performance Soundpad alternative engineered for Windows 10/11. Built specifically for gamers, streamers, and content creators, it provides ultra-low latency audio playback, real-time application audio streaming, online radio broadcasting, live DSP voice morphing, neural text-to-speech, and automatic push-to-talk integration.
 
-![SoundFlow Soundboard](assets/screenshots/soundboard.png)
+![SoundFlow Soundboard](assets/screenshots/v2/soundboard.png)
 
 ## 🚀 Key Features
 
@@ -41,7 +41,7 @@
 - **Panic Button**: Instant emergency mute and stop across all channels via `ESC`.
 
 ### 2. 🔀 Real-Time Application Audio Streamer (Live App Stream)
-![SoundFlow App Stream](assets/screenshots/app_stream.png)
+![SoundFlow App Stream](assets/screenshots/v2/app_stream.png)
 - **Direct App Capture**: Stream audio from any running Windows application (Chrome, Spotify, Telegram, Discord, media players, games) directly into your microphone for teammates.
 - **Multi-App Selection**: Select multiple applications simultaneously with real-time process icons in both the dropdown items and the selector header button.
 - **🔇 Mute for Self Only Toggle**: One-click switch to stream applications exclusively into the microphone (to teammates) while keeping your local headphones completely silent.
@@ -50,21 +50,21 @@
 - **Global Toggle Hotkey**: Enable/disable streaming anytime in-game using `Ctrl+F9`.
 
 ### 3. 📻 Global Online Radio & Media Streaming
-![SoundFlow Online Radio](assets/screenshots/radio.png)
+![SoundFlow Online Radio](assets/screenshots/v2/radio.png)
 - **Worldwide Catalog**: Built-in station presets and a searchable catalog of thousands of global radio stations.
 - **YouTube & Web Streams**: Direct audio streaming from YouTube videos, playlists, Shorts, and Icecast/Shoutcast links.
 - **Live Metadata**: Real-time display of track titles, artist names, and album artwork.
 - **Playlist Controls**: Skip tracks, previous/next video navigation, and seek controls directly in the UI.
 
 ### 4. 🎙️ Real-Time Voice Changer & DSP Effects
-![SoundFlow Voice FX](assets/screenshots/voice_fx.png)
+![SoundFlow Voice FX](assets/screenshots/v2/voice_fx.png)
 - **Live Voice Morphing**: High-fidelity pitch shifting and audio modulation with ultra-low latency.
 - **DSP Presets**: *Helium Chipmunk*, *Monster / Demon*, *Cyber Robot*, *Megaphone / Walkie-Talkie*, and *Space Echo*.
 - **Adaptive Noise Gate**: Dynamic threshold noise suppression to eliminate background keyboard clatter and ambient fan noise.
 - **Live Audio Monitor**: Optional "Hear Myself" preview with dedicated volume control.
 
 ### 5. 🗣️ Neural Text-to-Speech (Edge-TTS)
-![SoundFlow Text-to-Speech](assets/screenshots/tts.png)
+![SoundFlow Text-to-Speech](assets/screenshots/v2/tts.png)
 - **Microsoft Neural Voices**: High-naturalness voice synthesis in Russian and English (Dmitry, Svetlana, Guy, Jenny).
 - **Live Broadcast to Mic**: Type any sentence and broadcast it instantly to Discord or in-game voice chat.
 - **Save to Soundboard**: Turn synthesized phrases into permanent soundboard buttons with one click.
@@ -142,7 +142,7 @@ python run.py
 
 Приложение объединяет в одном неоновом Fluent-интерфейсе: быстрый саундборд без задержек, **живой стрим звука из любых приложений Windows напрямую в микрофон**, каталог интернет-радио и YouTube-потоков, голосовой чейнджер (Voice Changer) с DSP-эффектами и нейросетевую озвучку текста (Edge-TTS).
 
-![Саундборд SoundFlow](assets/screenshots/soundboard.png)
+![Саундборд SoundFlow](assets/screenshots/v2/soundboard.png)
 
 ## 🚀 Основные возможности
 
@@ -156,7 +156,7 @@ python run.py
 - Паническая клавиша `ESC` — моментальный сброс воспроизведения на всех каналах.
 
 ### 2. 🔀 Трансляция звука из приложений прямо в микрофон
-![Стрим приложений](assets/screenshots/app_stream.png)
+![Стрим приложений](assets/screenshots/v2/app_stream.png)
 - **Прямой захват**: транслируйте звук браузера (YouTube, Twitch), Spotify, Telegram или игр прямо в микрофон вашим тиммейтам.
 - **Мульти-выбор приложений**: возможность выбрать несколько приложений одновременно с отображением реальных иконок `.exe` как в списке, так и в шапке кнопки выбора.
 - **🔇 Тумблер «Заглушить только у себя»**: звук приложений идет только в микрофон тиммейтам, а в ваших наушниках сохраняется 100% тишина.
@@ -165,21 +165,21 @@ python run.py
 - **Глобальный хоткей**: включение и отключение трансляции по `Ctrl+F9`.
 
 ### 3. 📻 Интернет-радио и медиапотоки
-![Интернет-радио](assets/screenshots/radio.png)
+![Интернет-радио](assets/screenshots/v2/radio.png)
 - Каталог тысяч радиостанций со всего мира с поиском по странам и жанрам (Lofi, EDM, Rock, Pop, Jazz).
 - Воспроизведение обычных видео, шортсов и плейлистов YouTube прямо в микрофон.
 - Отображение текущего трека и обложки в реальном времени (ICY Metadata).
 - Управление треками: кнопки «Следующее видео», перемотка на 10 секунд, список треков плейлиста.
 
 ### 4. 🎙️ Голосовые DSP-эффекты и шумоподавитель
-![Голосовые эффекты](assets/screenshots/voice_fx.png)
+![Голосовые эффекты](assets/screenshots/v2/voice_fx.png)
 - Изменение высоты и тембра голоса в реальном времени.
 - Готовые пресеты: *Бурундук (Helium)*, *Демон / Монстр*, *Кибер-робот*, *Рация / Мегафон*, *Космическое эхо*.
 - Адаптивный гейт (Noise Gate) с регулируемым порогом для отсечения шума клавиатуры и микрофона.
 - Предпрослушивание «Слышать себя» с отдельным регулятором громкости.
 
 ### 5. 🗣️ Нейросетевой Text-to-Speech (TTS)
-![Синтез речи TTS](assets/screenshots/tts.png)
+![Синтез речи TTS](assets/screenshots/v2/tts.png)
 - Натуральные нейросетевые голоса Microsoft Neural (Дмитрий, Светлана, Guy, Jenny).
 - Озвучка на лету с отправкой напрямую в микрофон в Discord / играх.
 - Кнопка «Сохранить на саундборд» — моментальное сохранение фразы в виде кнопки саундборда.
